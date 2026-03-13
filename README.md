@@ -48,6 +48,21 @@ Intervals: `10s`, `30s`, `1m`, `5m`, `1h`, etc. (minimum 10s)
 | `LOG_LEVEL` | No | `info` | Log level: debug, info, warn, error |
 | `HEALTH_PORT` | No | `8080` | Port for /healthz HTTP endpoint |
 
+## Deploy on Coolify
+
+1. **Create a new resource** in Coolify and connect your Git repository (GitHub App or deploy key).
+2. **Select Dockerfile** as the build pack.
+3. **Set the port to `8080`** in the General tab (Coolify defaults to 3000).
+4. **Add persistent storage** — go to the Storage tab and add a volume with destination path `/app/data`. Coolify auto-appends a UUID to the volume name.
+5. **Set environment variables** in the Environment Variables tab:
+   - `TELEGRAM_TOKEN` (required)
+   - `TELEGRAM_CHAT_ID` (required)
+   - `DATABASE_PATH` = `/app/data/uptime.db` (optional, this is the default)
+   - `LOG_LEVEL`, `MAX_FAILURE_NOTIFICATIONS`, `HTTP_TIMEOUT`, `HEALTH_PORT` (optional, see Configuration table above)
+6. **Health checks** work automatically — the Dockerfile `HEALTHCHECK` takes precedence over Coolify's UI settings. Traefik routes traffic only to healthy instances.
+7. **Domain** is optional — the bot uses Telegram long polling (no incoming web traffic). Only assign a domain if you want external access to the `/healthz` endpoint.
+8. **Deploy** — Coolify will rebuild automatically on every push to the configured branch.
+
 ## Architecture
 
 - **Scheduler**: gocron-based periodic health checks per endpoint
