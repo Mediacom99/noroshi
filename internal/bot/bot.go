@@ -40,8 +40,9 @@ type Bot struct {
 // NewBot creates a Bot. SetScheduler must be called before Start.
 func NewBot(token string, chatID int64, store Store, rootCtx context.Context) (*Bot, error) {
 	pref := tele.Settings{
-		Token:  token,
-		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
+		Token:     token,
+		Poller:    &tele.LongPoller{Timeout: 10 * time.Second},
+		ParseMode: tele.ModeHTML,
 	}
 
 	tb, err := tele.NewBot(pref)
@@ -57,6 +58,7 @@ func NewBot(token string, chatID int64, store Store, rootCtx context.Context) (*
 	}
 
 	b.registerHandlers()
+	b.registerCommands()
 	return b, nil
 }
 
@@ -77,10 +79,40 @@ func (b *Bot) Stop() {
 	slog.Info("telegram bot stopped")
 }
 
+func (b *Bot) registerCommands() {
+	err := b.bot.SetCommands([]tele.Command{
+		{Text: "list", Description: "View all monitored endpoints"},
+		{Text: "add", Description: "Add endpoint: /add <name> <url> [interval]"},
+		{Text: "delete", Description: "Remove an endpoint"},
+		{Text: "interval", Description: "Change check interval"},
+		{Text: "help", Description: "Show help and usage info"},
+	})
+	if err != nil {
+		slog.Error("register commands", "error", err)
+	}
+}
+
+// guarded wraps a handler to ignore messages from chats other than the configured one.
+func (b *Bot) guarded(h tele.HandlerFunc) tele.HandlerFunc {
+	return func(c tele.Context) error {
+		if c.Chat().ID != b.chatID {
+			return nil
+		}
+		return h(c)
+	}
+}
+
 // SendMessage sends a text message to the configured chat ID.
 func (b *Bot) SendMessage(text string) error {
 	chat := &tele.Chat{ID: b.chatID}
-	_, err := b.bot.Send(chat, text)
+	_, err := b.bot.Send(chat, text, tele.NoPreview)
+	return err
+}
+
+// SendSilentMessage sends a text message without notification sound.
+func (b *Bot) SendSilentMessage(text string) error {
+	chat := &tele.Chat{ID: b.chatID}
+	_, err := b.bot.Send(chat, text, tele.NoPreview, tele.Silent)
 	return err
 }
 
@@ -101,8 +133,8 @@ func (n *TelegramNotifier) NotifyFailure(ctx context.Context, ep storage.Endpoin
 	return n.bot.SendMessage(msg)
 }
 
-// NotifyRecovery sends a recovery notification to the configured chat.
+// NotifyRecovery sends a silent recovery notification to the configured chat.
 func (n *TelegramNotifier) NotifyRecovery(ctx context.Context, ep storage.Endpoint, downtime time.Duration) error {
 	msg := FormatRecovery(ep, downtime)
-	return n.bot.SendMessage(msg)
+	return n.bot.SendSilentMessage(msg)
 }

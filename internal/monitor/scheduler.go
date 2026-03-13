@@ -63,6 +63,7 @@ func (s *Scheduler) Add(ctx context.Context, ep storage.Endpoint) error {
 		gocron.DurationJob(time.Duration(ep.IntervalSeconds)*time.Second),
 		gocron.NewTask(s.checkAndNotify, ep.ID),
 		gocron.WithTags(tag),
+		gocron.WithStartAt(gocron.WithStartImmediately()),
 	)
 	if err != nil {
 		return fmt.Errorf("add job for endpoint %d: %w", ep.ID, err)
