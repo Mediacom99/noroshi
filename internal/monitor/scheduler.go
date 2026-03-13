@@ -29,14 +29,14 @@ type Notifier interface {
 type Scheduler struct {
 	cron                    gocron.Scheduler
 	store                   Store
-	checker                 *Checker
+	checker                 *HTTPChecker
 	notifier                Notifier
 	maxFailureNotifications int
 	ctx                     context.Context
 }
 
 // NewScheduler creates a Scheduler. Call Start() to begin running jobs.
-func NewScheduler(ctx context.Context, store Store, checker *Checker, notifier Notifier, maxFailureNotifications int) (*Scheduler, error) {
+func NewScheduler(ctx context.Context, store Store, checker *HTTPChecker, notifier Notifier, maxFailureNotifications int) (*Scheduler, error) {
 	cron, err := gocron.NewScheduler()
 	if err != nil {
 		return nil, fmt.Errorf("create gocron scheduler: %w", err)

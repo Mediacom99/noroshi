@@ -138,7 +138,7 @@ func TestCheckAndNotifyOK(t *testing.T) {
 	store := newMockStore()
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
-	checker := NewChecker(5 * time.Second)
+	checker := NewHTTPChecker(5 * time.Second)
 
 	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3)
 	if err != nil {
@@ -169,7 +169,7 @@ func TestCheckAndNotifyFailure(t *testing.T) {
 	store := newMockStore()
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
-	checker := NewChecker(5 * time.Second)
+	checker := NewHTTPChecker(5 * time.Second)
 
 	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3)
 	if err != nil {
@@ -192,7 +192,7 @@ func TestCheckAndNotifyFailureCap(t *testing.T) {
 	store := newMockStore()
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
-	checker := NewChecker(5 * time.Second)
+	checker := NewHTTPChecker(5 * time.Second)
 
 	maxNotifications := 3
 	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxNotifications)
@@ -223,7 +223,7 @@ func TestCheckAndNotifyRecovery(t *testing.T) {
 	store := newMockStore()
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
-	checker := NewChecker(5 * time.Second)
+	checker := NewHTTPChecker(5 * time.Second)
 
 	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3)
 	if err != nil {
@@ -249,7 +249,7 @@ func TestCheckAndNotifyNoRecoveryWhenAlreadyOK(t *testing.T) {
 	store := newMockStore()
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
-	checker := NewChecker(5 * time.Second)
+	checker := NewHTTPChecker(5 * time.Second)
 
 	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3)
 	if err != nil {

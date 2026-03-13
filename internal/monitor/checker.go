@@ -7,13 +7,13 @@ import (
 	"github.com/hashicorp/go-retryablehttp"
 )
 
-// Checker performs HTTP health checks using retryablehttp.
-type Checker struct {
+// HTTPChecker performs HTTP health checks using retryablehttp.
+type HTTPChecker struct {
 	client *retryablehttp.Client
 }
 
-// NewChecker creates a Checker with retryablehttp configured per DESIGN.md.
-func NewChecker(timeout time.Duration) *Checker {
+// NewHTTPChecker creates a HTTPChecker with retryablehttp configured per DESIGN.md.
+func NewHTTPChecker(timeout time.Duration) *HTTPChecker {
 	client := retryablehttp.NewClient()
 	client.RetryMax = 2
 	client.RetryWaitMin = 500 * time.Millisecond
@@ -22,12 +22,12 @@ func NewChecker(timeout time.Duration) *Checker {
 	client.Logger = nil
 	// Return the last response instead of an error after retries exhausted
 	client.ErrorHandler = retryablehttp.PassthroughErrorHandler
-	return &Checker{client: client}
+	return &HTTPChecker{client: client}
 }
 
 // Check performs a GET request and returns the HTTP status code.
 // On connection error, returns 0 and the error.
-func (c *Checker) Check(ctx context.Context, url string) (int, error) {
+func (c *HTTPChecker) Check(ctx context.Context, url string) (int, error) {
 	req, err := retryablehttp.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return 0, err

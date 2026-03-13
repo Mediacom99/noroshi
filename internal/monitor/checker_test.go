@@ -14,7 +14,7 @@ func TestCheckerOK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	checker := NewChecker(5 * time.Second)
+	checker := NewHTTPChecker(5 * time.Second)
 	code, err := checker.Check(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
@@ -30,7 +30,7 @@ func TestChecker503(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	checker := NewChecker(5 * time.Second)
+	checker := NewHTTPChecker(5 * time.Second)
 	// With PassthroughErrorHandler, retryablehttp returns the last response
 	code, err := checker.Check(context.Background(), srv.URL)
 	if err != nil {
@@ -42,7 +42,7 @@ func TestChecker503(t *testing.T) {
 }
 
 func TestCheckerUnreachable(t *testing.T) {
-	checker := NewChecker(1 * time.Second)
+	checker := NewHTTPChecker(1 * time.Second)
 	// Use a port that is not listening
 	code, err := checker.Check(context.Background(), "http://127.0.0.1:1")
 	if err == nil {
@@ -60,7 +60,7 @@ func TestCheckerCancelledContext(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	checker := NewChecker(30 * time.Second)
+	checker := NewHTTPChecker(30 * time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 

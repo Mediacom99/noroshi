@@ -4,8 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
-	"strconv"
+"strconv"
 	"strings"
 	"time"
 
@@ -31,9 +30,8 @@ func (b *Bot) handleAdd(c tele.Context) error {
 	}
 
 	rawURL := args[0]
-	parsed, err := url.Parse(rawURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return c.Send("Invalid URL. Must start with http:// or https://")
+	if err := ValidateURL(rawURL); err != nil {
+		return c.Send("Invalid URL. Must be a valid http:// or https:// address.")
 	}
 
 	interval, err := time.ParseDuration(args[1])
@@ -98,20 +96,6 @@ func (b *Bot) handleStatus(c tele.Context) error {
 
 	if len(endpoints) == 0 {
 		return c.Send("No endpoints are being monitored.")
-	}
-
-	// Perform immediate checks
-	for i, ep := range endpoints {
-		statusCode, checkErr := b.checker.Check(b.rootCtx, ep.URL)
-		if checkErr != nil {
-			endpoints[i].Status = "not_ok"
-		} else if statusCode == 200 {
-			endpoints[i].Status = "ok"
-		} else {
-			endpoints[i].Status = "not_ok"
-		}
-		status := endpoints[i].Status
-		b.store.UpdateEndpointStatus(b.rootCtx, ep.ID, status, statusCode)
 	}
 
 	return c.Send(FormatEndpointList(endpoints))

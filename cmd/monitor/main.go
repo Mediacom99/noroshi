@@ -44,10 +44,10 @@ func main() {
 	store := storage.NewSQLiteStore(db)
 
 	// Create checker
-	checker := monitor.NewChecker(cfg.HTTPTimeout)
+	checker := monitor.NewHTTPChecker(cfg.HTTPTimeout)
 
 	// Create bot (without scheduler — circular dependency resolution)
-	teleBot, err := bot.NewBot(cfg.TelegramToken, cfg.TelegramChatID, store, checker, cfg.MaxFailureNotifications, ctx)
+	teleBot, err := bot.NewBot(cfg.TelegramToken, cfg.TelegramChatID, store, ctx)
 	if err != nil {
 		slog.Error("create bot", "error", err)
 		os.Exit(1)

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"noroshi/internal/monitor"
 	"noroshi/internal/storage"
 
 	tele "gopkg.in/telebot.v4"
@@ -19,23 +18,26 @@ type Store interface {
 	GetEndpointByURL(ctx context.Context, url string) (storage.Endpoint, error)
 	DeleteEndpoint(ctx context.Context, id int64) error
 	ListEndpoints(ctx context.Context) ([]storage.Endpoint, error)
-	UpdateEndpointStatus(ctx context.Context, id int64, status string, statusCode int) error
 	UpdateEndpointInterval(ctx context.Context, id int64, intervalSeconds int) error
+}
+
+// Scheduler defines the scheduling methods the bot needs.
+type Scheduler interface {
+	Add(ctx context.Context, ep storage.Endpoint) error
+	Remove(endpointID int64) error
 }
 
 // Bot wraps the Telegram bot with application logic.
 type Bot struct {
 	bot       *tele.Bot
 	store     Store
-	scheduler *monitor.Scheduler
-	checker   *monitor.Checker
+	scheduler Scheduler
 	chatID    int64
 	rootCtx   context.Context
-	maxFail   int
 }
 
 // NewBot creates a Bot. SetScheduler must be called before Start.
-func NewBot(token string, chatID int64, store Store, checker *monitor.Checker, maxFail int, rootCtx context.Context) (*Bot, error) {
+func NewBot(token string, chatID int64, store Store, rootCtx context.Context) (*Bot, error) {
 	pref := tele.Settings{
 		Token:  token,
 		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
@@ -49,10 +51,8 @@ func NewBot(token string, chatID int64, store Store, checker *monitor.Checker, m
 	b := &Bot{
 		bot:     tb,
 		store:   store,
-		checker: checker,
 		chatID:  chatID,
 		rootCtx: rootCtx,
-		maxFail: maxFail,
 	}
 
 	b.registerHandlers()
@@ -60,7 +60,7 @@ func NewBot(token string, chatID int64, store Store, checker *monitor.Checker, m
 }
 
 // SetScheduler sets the scheduler reference (resolves circular dependency).
-func (b *Bot) SetScheduler(s *monitor.Scheduler) {
+func (b *Bot) SetScheduler(s Scheduler) {
 	b.scheduler = s
 }
 
