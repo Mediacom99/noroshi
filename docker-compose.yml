@@ -1,0 +1,14 @@
+services:
+  uptime-monitor:
+    build: .
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - DATABASE_PATH=/app/data/uptime.db
+      - MAX_FAILURE_NOTIFICATIONS=3
+    volumes:
+      - uptime-data:/app/data
+
+volumes:
+  uptime-data:
