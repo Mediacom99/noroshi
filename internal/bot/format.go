@@ -39,7 +39,8 @@ func FormatDuration(d time.Duration) string {
 // FormatFailure formats a failure notification message.
 func FormatFailure(ep storage.Endpoint, maxFailures int) string {
 	return fmt.Sprintf(
-		"🔴 ENDPOINT DOWN\nURL: %s\nStatus: NOT_OK\nTime: %s\nConsecutive failures: %d/%d",
+		"🔴 ENDPOINT DOWN\nName: %s\nURL: %s\nStatus: NOT_OK\nTime: %s\nConsecutive failures: %d/%d",
+		ep.Name,
 		ep.URL,
 		time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
 		ep.FailureNotificationsSent,
@@ -50,7 +51,8 @@ func FormatFailure(ep storage.Endpoint, maxFailures int) string {
 // FormatFailureWithCode formats a failure notification message with status code.
 func FormatFailureWithCode(ep storage.Endpoint, statusCode int, maxFailures int) string {
 	return fmt.Sprintf(
-		"🔴 ENDPOINT DOWN\nURL: %s\nStatus: NOT_OK (HTTP %d)\nTime: %s\nConsecutive failures: %d/%d",
+		"🔴 ENDPOINT DOWN\nName: %s\nURL: %s\nStatus: NOT_OK (HTTP %d)\nTime: %s\nConsecutive failures: %d/%d",
+		ep.Name,
 		ep.URL,
 		statusCode,
 		time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
@@ -62,7 +64,8 @@ func FormatFailureWithCode(ep storage.Endpoint, statusCode int, maxFailures int)
 // FormatRecovery formats a recovery notification message.
 func FormatRecovery(ep storage.Endpoint, downtime time.Duration) string {
 	return fmt.Sprintf(
-		"🟢 ENDPOINT RECOVERED\nURL: %s\nStatus: OK (HTTP 200)\nDowntime: %s\nRecovered at: %s",
+		"🟢 ENDPOINT RECOVERED\nName: %s\nURL: %s\nStatus: OK (HTTP 200)\nDowntime: %s\nRecovered at: %s",
+		ep.Name,
 		ep.URL,
 		FormatDuration(downtime),
 		time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
@@ -83,22 +86,34 @@ func FormatEndpointList(endpoints []storage.Endpoint) string {
 		if ep.LastCheckedAt.Valid {
 			lastCheck = ep.LastCheckedAt.Time.UTC().Format("2006-01-02 15:04:05 UTC")
 		}
-		fmt.Fprintf(&b, "\n%d. %s\n   Status: %s | Interval: %s | Last check: %s\n",
-			i+1, ep.URL, ep.Status, interval, lastCheck)
+		fmt.Fprintf(&b, "\n%d. %s — %s\n   Status: %s | Interval: %s | Last check: %s\n",
+			i+1, ep.Name, ep.URL, ep.Status, interval, lastCheck)
 	}
 	return b.String()
 }
 
 // FormatHelp returns the help text.
 func FormatHelp() string {
-	return `📖 Available Commands
+	return `📖 Noroshi — Uptime Monitor
 
-/add <url> <interval> — Add endpoint (e.g., /add https://example.com 30s)
-/delete <id_or_url> — Remove endpoint
-/status — Check all endpoints now
-/list — List all endpoints
-/interval <id_or_url> <interval> — Update check interval
-/help — Show this message
+▸ Add an endpoint
+  /add <name> <url> <interval>
+  /add prod-api https://example.com 30s
 
-Intervals: 10s, 30s, 1m, 5m, 1h, etc. (minimum 10s)`
+▸ Remove an endpoint
+  /delete <id, name, or url>
+
+▸ Change check interval
+  /interval <id, name, or url> <interval>
+  /interval prod-api 5m
+
+▸ View endpoints
+  /list — list all endpoints
+  /status — same as /list
+
+▸ Help
+  /help — show this message
+
+Intervals: 10s, 30s, 1m, 5m, 1h, etc. (min 10s)
+Endpoints can be referenced by ID, name, or URL.`
 }

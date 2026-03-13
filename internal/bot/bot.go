@@ -13,9 +13,10 @@ import (
 
 // Store defines the storage methods the bot needs.
 type Store interface {
-	AddEndpoint(ctx context.Context, url string, intervalSeconds int) (storage.Endpoint, error)
+	AddEndpoint(ctx context.Context, name, url string, intervalSeconds int) (storage.Endpoint, error)
 	GetEndpoint(ctx context.Context, id int64) (storage.Endpoint, error)
 	GetEndpointByURL(ctx context.Context, url string) (storage.Endpoint, error)
+	GetEndpointByName(ctx context.Context, name string) (storage.Endpoint, error)
 	DeleteEndpoint(ctx context.Context, id int64) error
 	ListEndpoints(ctx context.Context) ([]storage.Endpoint, error)
 	UpdateEndpointInterval(ctx context.Context, id int64, intervalSeconds int) error

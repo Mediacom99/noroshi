@@ -36,6 +36,7 @@ func TestFormatDuration(t *testing.T) {
 
 func TestFormatFailureWithCode(t *testing.T) {
 	ep := storage.Endpoint{
+		Name:                     "prod-api",
 		URL:                      "https://api.example.com/health",
 		FailureNotificationsSent: 2,
 	}
@@ -44,6 +45,9 @@ func TestFormatFailureWithCode(t *testing.T) {
 
 	if !strings.Contains(msg, "🔴 ENDPOINT DOWN") {
 		t.Error("should contain failure header")
+	}
+	if !strings.Contains(msg, "prod-api") {
+		t.Error("should contain name")
 	}
 	if !strings.Contains(msg, "https://api.example.com/health") {
 		t.Error("should contain URL")
@@ -58,7 +62,8 @@ func TestFormatFailureWithCode(t *testing.T) {
 
 func TestFormatRecovery(t *testing.T) {
 	ep := storage.Endpoint{
-		URL: "https://api.example.com/health",
+		Name: "prod-api",
+		URL:  "https://api.example.com/health",
 	}
 	downtime := 12*time.Minute + 34*time.Second
 
@@ -66,6 +71,9 @@ func TestFormatRecovery(t *testing.T) {
 
 	if !strings.Contains(msg, "🟢 ENDPOINT RECOVERED") {
 		t.Error("should contain recovery header")
+	}
+	if !strings.Contains(msg, "prod-api") {
+		t.Error("should contain name")
 	}
 	if !strings.Contains(msg, "https://api.example.com/health") {
 		t.Error("should contain URL")
@@ -85,6 +93,7 @@ func TestFormatEndpointListEmpty(t *testing.T) {
 func TestFormatEndpointListSingle(t *testing.T) {
 	eps := []storage.Endpoint{
 		{
+			Name:            "prod-api",
 			URL:             "https://example.com",
 			IntervalSeconds: 30,
 			Status:          "ok",
@@ -96,6 +105,9 @@ func TestFormatEndpointListSingle(t *testing.T) {
 
 	if !strings.Contains(msg, "📋 Monitored Endpoints") {
 		t.Error("should contain header")
+	}
+	if !strings.Contains(msg, "prod-api") {
+		t.Error("should contain name")
 	}
 	if !strings.Contains(msg, "https://example.com") {
 		t.Error("should contain URL")
@@ -110,17 +122,23 @@ func TestFormatEndpointListSingle(t *testing.T) {
 
 func TestFormatEndpointListMultiple(t *testing.T) {
 	eps := []storage.Endpoint{
-		{URL: "https://a.com", IntervalSeconds: 30, Status: "ok"},
-		{URL: "https://b.com", IntervalSeconds: 60, Status: "not_ok"},
+		{Name: "site-a", URL: "https://a.com", IntervalSeconds: 30, Status: "ok"},
+		{Name: "site-b", URL: "https://b.com", IntervalSeconds: 60, Status: "not_ok"},
 	}
 
 	msg := FormatEndpointList(eps)
 
-	if !strings.Contains(msg, "1. https://a.com") {
-		t.Error("should contain first endpoint numbered")
+	if !strings.Contains(msg, "1. site-a") {
+		t.Error("should contain first endpoint with name")
 	}
-	if !strings.Contains(msg, "2. https://b.com") {
-		t.Error("should contain second endpoint numbered")
+	if !strings.Contains(msg, "2. site-b") {
+		t.Error("should contain second endpoint with name")
+	}
+	if !strings.Contains(msg, "https://a.com") {
+		t.Error("should contain first URL")
+	}
+	if !strings.Contains(msg, "https://b.com") {
+		t.Error("should contain second URL")
 	}
 }
 
@@ -132,5 +150,8 @@ func TestFormatHelp(t *testing.T) {
 		if !strings.Contains(msg, cmd) {
 			t.Errorf("help should contain %q", cmd)
 		}
+	}
+	if !strings.Contains(msg, "<name>") {
+		t.Error("help should show name parameter in /add syntax")
 	}
 }

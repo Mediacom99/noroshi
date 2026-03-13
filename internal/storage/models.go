@@ -8,6 +8,7 @@ import (
 // Endpoint represents a monitored endpoint.
 type Endpoint struct {
 	ID                       int64
+	Name                     string
 	URL                      string
 	IntervalSeconds          int
 	Status                   string

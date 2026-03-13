@@ -63,9 +63,12 @@ func TestAddAndGetEndpoint(t *testing.T) {
 	store := NewSQLiteStore(db)
 	ctx := context.Background()
 
-	ep, err := store.AddEndpoint(ctx, "https://example.com", 30)
+	ep, err := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 	if err != nil {
 		t.Fatalf("AddEndpoint: %v", err)
+	}
+	if ep.Name != "prod-api" {
+		t.Errorf("Name = %q, want %q", ep.Name, "prod-api")
 	}
 	if ep.URL != "https://example.com" {
 		t.Errorf("URL = %q, want %q", ep.URL, "https://example.com")
@@ -81,22 +84,41 @@ func TestAddAndGetEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetEndpoint: %v", err)
 	}
+	if got.Name != ep.Name {
+		t.Errorf("GetEndpoint Name = %q, want %q", got.Name, ep.Name)
+	}
 	if got.URL != ep.URL {
 		t.Errorf("GetEndpoint URL = %q, want %q", got.URL, ep.URL)
 	}
 }
 
-func TestAddEndpointDuplicate(t *testing.T) {
+func TestAddEndpointDuplicateURL(t *testing.T) {
 	db := testDB(t)
 	store := NewSQLiteStore(db)
 	ctx := context.Background()
 
-	_, err := store.AddEndpoint(ctx, "https://example.com", 30)
+	_, err := store.AddEndpoint(ctx, "ep1", "https://example.com", 30)
 	if err != nil {
 		t.Fatalf("first AddEndpoint: %v", err)
 	}
 
-	_, err = store.AddEndpoint(ctx, "https://example.com", 60)
+	_, err = store.AddEndpoint(ctx, "ep2", "https://example.com", 60)
+	if !errors.Is(err, apperror.ErrDuplicate) {
+		t.Fatalf("expected ErrDuplicate, got: %v", err)
+	}
+}
+
+func TestAddEndpointDuplicateName(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	_, err := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+	if err != nil {
+		t.Fatalf("first AddEndpoint: %v", err)
+	}
+
+	_, err = store.AddEndpoint(ctx, "prod-api", "https://other.com", 60)
 	if !errors.Is(err, apperror.ErrDuplicate) {
 		t.Fatalf("expected ErrDuplicate, got: %v", err)
 	}
@@ -118,7 +140,7 @@ func TestDeleteEndpoint(t *testing.T) {
 	store := NewSQLiteStore(db)
 	ctx := context.Background()
 
-	ep, err := store.AddEndpoint(ctx, "https://example.com", 30)
+	ep, err := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 	if err != nil {
 		t.Fatalf("AddEndpoint: %v", err)
 	}
@@ -149,8 +171,8 @@ func TestListEndpoints(t *testing.T) {
 	store := NewSQLiteStore(db)
 	ctx := context.Background()
 
-	_, _ = store.AddEndpoint(ctx, "https://a.com", 30)
-	_, _ = store.AddEndpoint(ctx, "https://b.com", 60)
+	_, _ = store.AddEndpoint(ctx, "site-a", "https://a.com", 30)
+	_, _ = store.AddEndpoint(ctx, "site-b", "https://b.com", 60)
 
 	eps, err := store.ListEndpoints(ctx)
 	if err != nil {
@@ -172,7 +194,7 @@ func TestRecordFailure(t *testing.T) {
 	store := NewSQLiteStore(db)
 	ctx := context.Background()
 
-	ep, _ := store.AddEndpoint(ctx, "https://example.com", 30)
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 
 	// First failure
 	updated, err := store.RecordFailure(ctx, ep.ID, 503)
@@ -211,7 +233,7 @@ func TestRecordRecovery(t *testing.T) {
 	store := NewSQLiteStore(db)
 	ctx := context.Background()
 
-	ep, _ := store.AddEndpoint(ctx, "https://example.com", 30)
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 	store.RecordFailure(ctx, ep.ID, 503)
 	store.RecordFailure(ctx, ep.ID, 503)
 
@@ -249,7 +271,7 @@ func TestUpdateEndpointInterval(t *testing.T) {
 	store := NewSQLiteStore(db)
 	ctx := context.Background()
 
-	ep, _ := store.AddEndpoint(ctx, "https://example.com", 30)
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 
 	if err := store.UpdateEndpointInterval(ctx, ep.ID, 60); err != nil {
 		t.Fatalf("UpdateEndpointInterval: %v", err)
@@ -269,7 +291,7 @@ func TestGetEndpointByURL(t *testing.T) {
 	store := NewSQLiteStore(db)
 	ctx := context.Background()
 
-	added, _ := store.AddEndpoint(ctx, "https://example.com", 30)
+	added, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 
 	got, err := store.GetEndpointByURL(ctx, "https://example.com")
 	if err != nil {
@@ -291,12 +313,42 @@ func TestGetEndpointByURLNotFound(t *testing.T) {
 	}
 }
 
+func TestGetEndpointByName(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	added, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+
+	got, err := store.GetEndpointByName(ctx, "prod-api")
+	if err != nil {
+		t.Fatalf("GetEndpointByName: %v", err)
+	}
+	if got.ID != added.ID {
+		t.Errorf("ID = %d, want %d", got.ID, added.ID)
+	}
+	if got.Name != "prod-api" {
+		t.Errorf("Name = %q, want %q", got.Name, "prod-api")
+	}
+}
+
+func TestGetEndpointByNameNotFound(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	_, err := store.GetEndpointByName(ctx, "nonexistent")
+	if !errors.Is(err, apperror.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got: %v", err)
+	}
+}
+
 func TestUpdateEndpointStatus(t *testing.T) {
 	db := testDB(t)
 	store := NewSQLiteStore(db)
 	ctx := context.Background()
 
-	ep, _ := store.AddEndpoint(ctx, "https://example.com", 30)
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 
 	if err := store.UpdateEndpointStatus(ctx, ep.ID, "ok", 200); err != nil {
 		t.Fatalf("UpdateEndpointStatus: %v", err)

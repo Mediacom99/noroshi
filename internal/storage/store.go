@@ -53,10 +53,10 @@ func NewSQLiteStore(db *sql.DB) *SQLiteStore {
 	return &SQLiteStore{db: db}
 }
 
-func (s *SQLiteStore) AddEndpoint(ctx context.Context, url string, intervalSeconds int) (Endpoint, error) {
+func (s *SQLiteStore) AddEndpoint(ctx context.Context, name, url string, intervalSeconds int) (Endpoint, error) {
 	result, err := s.db.ExecContext(ctx,
-		"INSERT INTO endpoints (url, interval_seconds) VALUES (?, ?)",
-		url, intervalSeconds,
+		"INSERT INTO endpoints (name, url, interval_seconds) VALUES (?, ?, ?)",
+		name, url, intervalSeconds,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -76,10 +76,10 @@ func (s *SQLiteStore) AddEndpoint(ctx context.Context, url string, intervalSecon
 func (s *SQLiteStore) GetEndpoint(ctx context.Context, id int64) (Endpoint, error) {
 	var ep Endpoint
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, url, interval_seconds, status, last_checked_at, last_failure_at,
+		`SELECT id, name, url, interval_seconds, status, last_checked_at, last_failure_at,
 		        consecutive_failures, failure_notifications_sent, created_at
 		 FROM endpoints WHERE id = ?`, id,
-	).Scan(&ep.ID, &ep.URL, &ep.IntervalSeconds, &ep.Status,
+	).Scan(&ep.ID, &ep.Name, &ep.URL, &ep.IntervalSeconds, &ep.Status,
 		&ep.LastCheckedAt, &ep.LastFailureAt,
 		&ep.ConsecutiveFailures, &ep.FailureNotificationsSent, &ep.CreatedAt)
 
@@ -95,10 +95,29 @@ func (s *SQLiteStore) GetEndpoint(ctx context.Context, id int64) (Endpoint, erro
 func (s *SQLiteStore) GetEndpointByURL(ctx context.Context, url string) (Endpoint, error) {
 	var ep Endpoint
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, url, interval_seconds, status, last_checked_at, last_failure_at,
+		`SELECT id, name, url, interval_seconds, status, last_checked_at, last_failure_at,
 		        consecutive_failures, failure_notifications_sent, created_at
 		 FROM endpoints WHERE url = ?`, url,
-	).Scan(&ep.ID, &ep.URL, &ep.IntervalSeconds, &ep.Status,
+	).Scan(&ep.ID, &ep.Name, &ep.URL, &ep.IntervalSeconds, &ep.Status,
+		&ep.LastCheckedAt, &ep.LastFailureAt,
+		&ep.ConsecutiveFailures, &ep.FailureNotificationsSent, &ep.CreatedAt)
+
+	if err == sql.ErrNoRows {
+		return Endpoint{}, apperror.Wrap(apperror.ErrNotFound, err)
+	}
+	if err != nil {
+		return Endpoint{}, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	return ep, nil
+}
+
+func (s *SQLiteStore) GetEndpointByName(ctx context.Context, name string) (Endpoint, error) {
+	var ep Endpoint
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, url, interval_seconds, status, last_checked_at, last_failure_at,
+		        consecutive_failures, failure_notifications_sent, created_at
+		 FROM endpoints WHERE name = ?`, name,
+	).Scan(&ep.ID, &ep.Name, &ep.URL, &ep.IntervalSeconds, &ep.Status,
 		&ep.LastCheckedAt, &ep.LastFailureAt,
 		&ep.ConsecutiveFailures, &ep.FailureNotificationsSent, &ep.CreatedAt)
 
@@ -128,7 +147,7 @@ func (s *SQLiteStore) DeleteEndpoint(ctx context.Context, id int64) error {
 
 func (s *SQLiteStore) ListEndpoints(ctx context.Context) ([]Endpoint, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, url, interval_seconds, status, last_checked_at, last_failure_at,
+		`SELECT id, name, url, interval_seconds, status, last_checked_at, last_failure_at,
 		        consecutive_failures, failure_notifications_sent, created_at
 		 FROM endpoints ORDER BY id`,
 	)
@@ -140,7 +159,7 @@ func (s *SQLiteStore) ListEndpoints(ctx context.Context) ([]Endpoint, error) {
 	var endpoints []Endpoint
 	for rows.Next() {
 		var ep Endpoint
-		if err := rows.Scan(&ep.ID, &ep.URL, &ep.IntervalSeconds, &ep.Status,
+		if err := rows.Scan(&ep.ID, &ep.Name, &ep.URL, &ep.IntervalSeconds, &ep.Status,
 			&ep.LastCheckedAt, &ep.LastFailureAt,
 			&ep.ConsecutiveFailures, &ep.FailureNotificationsSent, &ep.CreatedAt); err != nil {
 			return nil, apperror.Wrap(apperror.ErrDatabase, err)
