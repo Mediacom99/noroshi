@@ -8,30 +8,32 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"noroshi/internal/storage"
 )
 
 // mockStore implements Store for testing.
 type mockStore struct {
 	mu        sync.Mutex
-	endpoints map[int64]Endpoint
+	endpoints map[int64]storage.Endpoint
 }
 
 func newMockStore() *mockStore {
-	return &mockStore{endpoints: make(map[int64]Endpoint)}
+	return &mockStore{endpoints: make(map[int64]storage.Endpoint)}
 }
 
-func (m *mockStore) SetEndpoint(ep Endpoint) {
+func (m *mockStore) SetEndpoint(ep storage.Endpoint) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.endpoints[ep.ID] = ep
 }
 
-func (m *mockStore) GetEndpoint(_ context.Context, id int64) (Endpoint, error) {
+func (m *mockStore) GetEndpoint(_ context.Context, id int64) (storage.Endpoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ep, ok := m.endpoints[id]
 	if !ok {
-		return Endpoint{}, &notFoundError{}
+		return storage.Endpoint{}, &notFoundError{}
 	}
 	return ep, nil
 }
@@ -49,12 +51,12 @@ func (m *mockStore) UpdateEndpointStatus(_ context.Context, id int64, status str
 	return nil
 }
 
-func (m *mockStore) RecordFailure(_ context.Context, id int64, _ int) (Endpoint, error) {
+func (m *mockStore) RecordFailure(_ context.Context, id int64, _ int) (storage.Endpoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ep, ok := m.endpoints[id]
 	if !ok {
-		return Endpoint{}, &notFoundError{}
+		return storage.Endpoint{}, &notFoundError{}
 	}
 	ep.ConsecutiveFailures++
 	ep.FailureNotificationsSent++
@@ -67,12 +69,12 @@ func (m *mockStore) RecordFailure(_ context.Context, id int64, _ int) (Endpoint,
 	return ep, nil
 }
 
-func (m *mockStore) RecordRecovery(_ context.Context, id int64, _ int) (Endpoint, error) {
+func (m *mockStore) RecordRecovery(_ context.Context, id int64, _ int) (storage.Endpoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ep, ok := m.endpoints[id]
 	if !ok {
-		return Endpoint{}, &notFoundError{}
+		return storage.Endpoint{}, &notFoundError{}
 	}
 	result := ep // preserve LastFailureAt
 	ep.Status = "ok"
@@ -92,23 +94,23 @@ func (e *notFoundError) Error() string { return "not found" }
 // mockNotifier records notification calls.
 type mockNotifier struct {
 	mu         sync.Mutex
-	failures   []Endpoint
+	failures   []storage.Endpoint
 	recoveries []recoveryCall
 }
 
 type recoveryCall struct {
-	Endpoint Endpoint
+	Endpoint storage.Endpoint
 	Downtime time.Duration
 }
 
-func (n *mockNotifier) NotifyFailure(_ context.Context, ep Endpoint) error {
+func (n *mockNotifier) NotifyFailure(_ context.Context, ep storage.Endpoint) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.failures = append(n.failures, ep)
 	return nil
 }
 
-func (n *mockNotifier) NotifyRecovery(_ context.Context, ep Endpoint, downtime time.Duration) error {
+func (n *mockNotifier) NotifyRecovery(_ context.Context, ep storage.Endpoint, downtime time.Duration) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.recoveries = append(n.recoveries, recoveryCall{ep, downtime})
@@ -134,7 +136,7 @@ func TestCheckAndNotifyOK(t *testing.T) {
 	defer srv.Close()
 
 	store := newMockStore()
-	store.SetEndpoint(Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := NewChecker(5 * time.Second)
 
@@ -165,7 +167,7 @@ func TestCheckAndNotifyFailure(t *testing.T) {
 	defer srv.Close()
 
 	store := newMockStore()
-	store.SetEndpoint(Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := NewChecker(5 * time.Second)
 
@@ -188,7 +190,7 @@ func TestCheckAndNotifyFailureCap(t *testing.T) {
 	defer srv.Close()
 
 	store := newMockStore()
-	store.SetEndpoint(Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := NewChecker(5 * time.Second)
 
@@ -198,7 +200,6 @@ func TestCheckAndNotifyFailureCap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Run more failures than the cap
 	for range 5 {
 		sched.checkAndNotify(1)
 	}
@@ -220,7 +221,7 @@ func TestCheckAndNotifyRecovery(t *testing.T) {
 	defer srv.Close()
 
 	store := newMockStore()
-	store.SetEndpoint(Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := NewChecker(5 * time.Second)
 
@@ -229,10 +230,8 @@ func TestCheckAndNotifyRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Cause a failure
 	sched.checkAndNotify(1)
 
-	// Recover
 	isDown = false
 	sched.checkAndNotify(1)
 
@@ -248,7 +247,7 @@ func TestCheckAndNotifyNoRecoveryWhenAlreadyOK(t *testing.T) {
 	defer srv.Close()
 
 	store := newMockStore()
-	store.SetEndpoint(Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := NewChecker(5 * time.Second)
 

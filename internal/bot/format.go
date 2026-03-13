@@ -1,24 +1,12 @@
 package bot
 
 import (
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
-)
 
-// Endpoint mirrors storage.Endpoint for the bot package.
-type Endpoint struct {
-	ID                       int64
-	URL                      string
-	IntervalSeconds          int
-	Status                   string
-	LastCheckedAt            sql.NullTime
-	LastFailureAt            sql.NullTime
-	ConsecutiveFailures      int
-	FailureNotificationsSent int
-	CreatedAt                time.Time
-}
+	"noroshi/internal/storage"
+)
 
 // FormatDuration produces human-readable duration: "2h 15m 30s", "12m 34s", "45s".
 func FormatDuration(d time.Duration) string {
@@ -49,11 +37,10 @@ func FormatDuration(d time.Duration) string {
 }
 
 // FormatFailure formats a failure notification message.
-func FormatFailure(ep Endpoint, maxFailures int) string {
+func FormatFailure(ep storage.Endpoint, maxFailures int) string {
 	return fmt.Sprintf(
-		"🔴 ENDPOINT DOWN\nURL: %s\nStatus: NOT_OK (HTTP %d)\nTime: %s\nConsecutive failures: %d/%d",
+		"🔴 ENDPOINT DOWN\nURL: %s\nStatus: NOT_OK\nTime: %s\nConsecutive failures: %d/%d",
 		ep.URL,
-		0, // status code not stored in endpoint — caller can extend if needed
 		time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
 		ep.FailureNotificationsSent,
 		maxFailures,
@@ -61,7 +48,7 @@ func FormatFailure(ep Endpoint, maxFailures int) string {
 }
 
 // FormatFailureWithCode formats a failure notification message with status code.
-func FormatFailureWithCode(ep Endpoint, statusCode int, maxFailures int) string {
+func FormatFailureWithCode(ep storage.Endpoint, statusCode int, maxFailures int) string {
 	return fmt.Sprintf(
 		"🔴 ENDPOINT DOWN\nURL: %s\nStatus: NOT_OK (HTTP %d)\nTime: %s\nConsecutive failures: %d/%d",
 		ep.URL,
@@ -73,7 +60,7 @@ func FormatFailureWithCode(ep Endpoint, statusCode int, maxFailures int) string 
 }
 
 // FormatRecovery formats a recovery notification message.
-func FormatRecovery(ep Endpoint, downtime time.Duration) string {
+func FormatRecovery(ep storage.Endpoint, downtime time.Duration) string {
 	return fmt.Sprintf(
 		"🟢 ENDPOINT RECOVERED\nURL: %s\nStatus: OK (HTTP 200)\nDowntime: %s\nRecovered at: %s",
 		ep.URL,
@@ -83,7 +70,7 @@ func FormatRecovery(ep Endpoint, downtime time.Duration) string {
 }
 
 // FormatEndpointList formats a list of endpoints for display.
-func FormatEndpointList(endpoints []Endpoint) string {
+func FormatEndpointList(endpoints []storage.Endpoint) string {
 	if len(endpoints) == 0 {
 		return "No endpoints are being monitored."
 	}

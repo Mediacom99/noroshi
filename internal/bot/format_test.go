@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"noroshi/internal/storage"
 )
 
 func TestFormatDuration(t *testing.T) {
@@ -33,7 +35,7 @@ func TestFormatDuration(t *testing.T) {
 }
 
 func TestFormatFailureWithCode(t *testing.T) {
-	ep := Endpoint{
+	ep := storage.Endpoint{
 		URL:                      "https://api.example.com/health",
 		FailureNotificationsSent: 2,
 	}
@@ -55,7 +57,7 @@ func TestFormatFailureWithCode(t *testing.T) {
 }
 
 func TestFormatRecovery(t *testing.T) {
-	ep := Endpoint{
+	ep := storage.Endpoint{
 		URL: "https://api.example.com/health",
 	}
 	downtime := 12*time.Minute + 34*time.Second
@@ -81,7 +83,7 @@ func TestFormatEndpointListEmpty(t *testing.T) {
 }
 
 func TestFormatEndpointListSingle(t *testing.T) {
-	eps := []Endpoint{
+	eps := []storage.Endpoint{
 		{
 			URL:             "https://example.com",
 			IntervalSeconds: 30,
@@ -107,7 +109,7 @@ func TestFormatEndpointListSingle(t *testing.T) {
 }
 
 func TestFormatEndpointListMultiple(t *testing.T) {
-	eps := []Endpoint{
+	eps := []storage.Endpoint{
 		{URL: "https://a.com", IntervalSeconds: 30, Status: "ok"},
 		{URL: "https://b.com", IntervalSeconds: 60, Status: "not_ok"},
 	}

@@ -2,39 +2,27 @@ package monitor
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"noroshi/internal/storage"
+
 	"github.com/go-co-op/gocron/v2"
 )
 
-// Endpoint mirrors storage.Endpoint for the monitor package.
-type Endpoint struct {
-	ID                       int64
-	URL                      string
-	IntervalSeconds          int
-	Status                   string
-	LastCheckedAt            sql.NullTime
-	LastFailureAt            sql.NullTime
-	ConsecutiveFailures      int
-	FailureNotificationsSent int
-	CreatedAt                time.Time
-}
-
 // Store defines the storage methods the scheduler needs.
 type Store interface {
-	GetEndpoint(ctx context.Context, id int64) (Endpoint, error)
+	GetEndpoint(ctx context.Context, id int64) (storage.Endpoint, error)
 	UpdateEndpointStatus(ctx context.Context, id int64, status string, statusCode int) error
-	RecordFailure(ctx context.Context, id int64, statusCode int) (Endpoint, error)
-	RecordRecovery(ctx context.Context, id int64, statusCode int) (Endpoint, error)
+	RecordFailure(ctx context.Context, id int64, statusCode int) (storage.Endpoint, error)
+	RecordRecovery(ctx context.Context, id int64, statusCode int) (storage.Endpoint, error)
 }
 
 // Notifier sends failure and recovery notifications.
 type Notifier interface {
-	NotifyFailure(ctx context.Context, endpoint Endpoint) error
-	NotifyRecovery(ctx context.Context, endpoint Endpoint, downtime time.Duration) error
+	NotifyFailure(ctx context.Context, endpoint storage.Endpoint) error
+	NotifyRecovery(ctx context.Context, endpoint storage.Endpoint, downtime time.Duration) error
 }
 
 // Scheduler manages periodic health checks using gocron.
@@ -69,7 +57,7 @@ func (s *Scheduler) Start() {
 }
 
 // Add creates a gocron job for the given endpoint.
-func (s *Scheduler) Add(ctx context.Context, ep Endpoint) error {
+func (s *Scheduler) Add(ctx context.Context, ep storage.Endpoint) error {
 	tag := fmt.Sprintf("endpoint-%d", ep.ID)
 	_, err := s.cron.NewJob(
 		gocron.DurationJob(time.Duration(ep.IntervalSeconds)*time.Second),
