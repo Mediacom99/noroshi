@@ -44,7 +44,10 @@ Plans:
   2. Every bot command handler (/add, /delete, /list, /interval, /help) has table-driven tests covering both happy path and error paths
   3. Every bot callback handler (detail view, refresh, back, delete confirmation) has table-driven tests covering both happy path and error paths
   4. Scheduler tests use mock Checker interface instead of real HTTP servers, making all tests deterministic
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 02-01-PLAN.md -- Mock infrastructure and command handler tests (TEST-01, TEST-02)
+- [ ] 02-02-PLAN.md -- Callback handler tests and mock-based scheduler tests (TEST-03, TEST-04)
 
 ### Phase 3: CI Pipeline
 **Goal**: Every push to develop and main is automatically built, vetted, tested, and linted, with all checks passing green
@@ -88,7 +91,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Interface Cleanup and Tech Debt | 0/2 | Planning complete | - |
-| 2. Bot Handler Tests | 0/? | Not started | - |
+| 2. Bot Handler Tests | 0/2 | Planning complete | - |
 | 3. CI Pipeline | 0/? | Not started | - |
 | 4. Feature Completion | 0/? | Not started | - |
 | 5. Documentation and README | 0/? | Not started | - |
