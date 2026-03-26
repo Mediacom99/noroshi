@@ -29,12 +29,13 @@ Reliable uptime monitoring with zero-friction setup — one Docker container, on
 - ✓ HTTP status code persisted and displayed in failure notifications — Phase 1
 - ✓ Endpoint name validation (alphanumeric, hyphens, underscores, max 50 chars) — Phase 1
 - ✓ Dead code sweep (FormatFailureWithCode now live, no orphaned exports) — Phase 1
+- ✓ Bot handler and callback tests with shared mock infrastructure (mockContext, mockStore, mockScheduler) — Phase 2
+- ✓ Mock-based deterministic scheduler tests (mockChecker replaces httptest for new tests) — Phase 2
 
 ### Active
 
 - [ ] Implement `/status` command that triggers live health checks
 - [ ] Trigger immediate health check and show result when user adds an endpoint
-- [ ] Add tests for bot handlers and callbacks (mock tele.Context + Store + Scheduler)
 - [ ] Improve structured logging with consistent fields across all packages
 - [ ] Update DESIGN.md to match current implementation
 - [ ] Professional README with badges, architecture section, clear setup/deploy docs
@@ -55,7 +56,7 @@ Reliable uptime monitoring with zero-friction setup — one Docker container, on
 
 - **Owner:** Freelance software developer building a portfolio of polished, open-source Go projects
 - **Goal:** This is a showcase project — the code quality, documentation, and presentation should reflect professional standards that impress clients and the dev community
-- **Current state:** Core functionality works and is deployed on a VPS via Coolify. Phase 1 resolved interface violations, dead code, and input validation gaps. Remaining work: bot handler tests, CI pipeline, feature completion, documentation.
+- **Current state:** Core functionality works and is deployed on a VPS via Coolify. Phase 1 resolved interface violations, dead code, and input validation gaps. Phase 2 added comprehensive bot handler/callback tests with shared mock infrastructure and deterministic scheduler tests. Remaining work: CI pipeline, feature completion, documentation.
 - **Codebase map:** `.planning/codebase/` contains 7 analysis documents from 2026-03-26
 - **Tech debt resolved (Phase 1):** Scheduler now depends on Checker interface; FormatFailureWithCode is live code; statusCode persisted via migration 003; endpoint name validation added
 
@@ -95,4 +96,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-26 after Phase 1 completion*
+*Last updated: 2026-03-26 after Phase 2 completion*
