@@ -33,7 +33,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans:** 2 plans
 Plans:
 - [x] 01-01-PLAN.md -- Checker interface extraction and last_status_code storage persistence
-- [ ] 01-02-PLAN.md -- Status code notification wiring, dead code sweep, name validation
+- [x] 01-02-PLAN.md -- Status code notification wiring, dead code sweep, name validation
 
 ### Phase 2: Bot Handler Tests
 **Goal**: Every bot command handler and callback handler has table-driven tests covering success and error paths, built on shared mock infrastructure

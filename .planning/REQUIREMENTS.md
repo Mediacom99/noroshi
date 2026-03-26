@@ -8,10 +8,10 @@
 ### Code Quality
 
 - [x] **QUAL-01**: Scheduler depends on a Checker interface, not concrete `*HTTPChecker`
-- [ ] **QUAL-02**: HTTP status code flows through notification pipeline — `NotifyFailure` receives status code and uses `FormatFailureWithCode` for non-zero codes
+- [x] **QUAL-02**: HTTP status code flows through notification pipeline — `NotifyFailure` receives status code and uses `FormatFailureWithCode` for non-zero codes
 - [x] **QUAL-03**: Store methods either persist `statusCode` to a `last_status_code` DB column or remove the unused parameter from signatures
-- [ ] **QUAL-04**: Dead code removed — unused functions, stale references cleaned up
-- [ ] **QUAL-05**: Endpoint name validation enforced (alphanumeric, hyphens, underscores, max 50 chars)
+- [x] **QUAL-04**: Dead code removed — unused functions, stale references cleaned up
+- [x] **QUAL-05**: Endpoint name validation enforced (alphanumeric, hyphens, underscores, max 50 chars)
 
 ### Testing
 
@@ -82,10 +82,10 @@ Deferred to future milestone. Tracked but not in current roadmap.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | QUAL-01 | Phase 1 | Complete |
-| QUAL-02 | Phase 1 | Pending |
+| QUAL-02 | Phase 1 | Complete |
 | QUAL-03 | Phase 1 | Complete |
-| QUAL-04 | Phase 1 | Pending |
-| QUAL-05 | Phase 1 | Pending |
+| QUAL-04 | Phase 1 | Complete |
+| QUAL-05 | Phase 1 | Complete |
 | TEST-01 | Phase 2 | Pending |
 | TEST-02 | Phase 2 | Pending |
 | TEST-03 | Phase 2 | Pending |

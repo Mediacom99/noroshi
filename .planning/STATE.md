@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-03-26T09:45:35.938Z"
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-03-26T09:53:00.572Z"
 last_activity: 2026-03-26
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 ## Current Position
 
 Phase: 1 of 5 (Interface Cleanup and Tech Debt)
-Plan: 1 of 2 in current phase
+Plan: 2 of 2 in current phase
 Status: Ready to execute
 Last activity: 2026-03-26
 
@@ -53,6 +53,7 @@ Progress: [..........] 0%
 
 *Updated after each plan completion*
 | Phase 01 P01 | 3min | 2 tasks | 5 files |
+| Phase 01 P02 | 3min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -65,6 +66,8 @@ Recent decisions affecting current work:
 - Roadmap: 5-phase structure derived from dependency chain (interfaces -> tests -> CI -> features -> docs)
 - [Phase 01]: Checker interface placed in scheduler.go at point of use alongside Store and Notifier
 - [Phase 01]: last_status_code defaults to 0 matching HTTPChecker connection-error return value
+- [Phase 01]: ValidateName uses character-level checking (no regexp) matching ValidateURL style
+- [Phase 01]: ErrInvalidInput sentinel kept as intentional API surface for Phase 2 bot handler tests
 
 ### Pending Todos
 
@@ -76,6 +79,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-26T09:45:35.936Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-03-26T09:53:00.571Z
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None
