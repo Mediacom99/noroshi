@@ -25,17 +25,17 @@ Reliable uptime monitoring with zero-friction setup — one Docker container, on
 - ✓ Chat ID-based authorization guard — existing
 - ✓ URL and interval validation — existing
 - ✓ Graceful shutdown with context propagation — existing
+- ✓ Checker interface at point of use (Scheduler accepts any Checker, not *HTTPChecker) — Phase 1
+- ✓ HTTP status code persisted and displayed in failure notifications — Phase 1
+- ✓ Endpoint name validation (alphanumeric, hyphens, underscores, max 50 chars) — Phase 1
+- ✓ Dead code sweep (FormatFailureWithCode now live, no orphaned exports) — Phase 1
 
 ### Active
 
-- [ ] Fix Scheduler to depend on Checker interface, not concrete HTTPChecker
-- [ ] Pass HTTP status code through notification pipeline (use FormatFailureWithCode)
-- [ ] Persist or remove unused statusCode parameter in store methods
 - [ ] Implement `/status` command that triggers live health checks
 - [ ] Trigger immediate health check and show result when user adds an endpoint
 - [ ] Add tests for bot handlers and callbacks (mock tele.Context + Store + Scheduler)
 - [ ] Improve structured logging with consistent fields across all packages
-- [ ] Add name validation (alphanumeric, hyphens, underscores, max length)
 - [ ] Update DESIGN.md to match current implementation
 - [ ] Professional README with badges, architecture section, clear setup/deploy docs
 - [ ] GitHub Actions CI pipeline (build, vet, test, lint)
@@ -55,9 +55,9 @@ Reliable uptime monitoring with zero-friction setup — one Docker container, on
 
 - **Owner:** Freelance software developer building a portfolio of polished, open-source Go projects
 - **Goal:** This is a showcase project — the code quality, documentation, and presentation should reflect professional standards that impress clients and the dev community
-- **Current state:** Core functionality works and is deployed on a VPS via Coolify. The codebase has technical debt (interface violations, dead code, stale docs) and missing features (live status checks, bot handler tests, CI pipeline)
+- **Current state:** Core functionality works and is deployed on a VPS via Coolify. Phase 1 resolved interface violations, dead code, and input validation gaps. Remaining work: bot handler tests, CI pipeline, feature completion, documentation.
 - **Codebase map:** `.planning/codebase/` contains 7 analysis documents from 2026-03-26
-- **Tech debt highlights:** Scheduler depends on concrete `*HTTPChecker` instead of interface; `FormatFailureWithCode` defined but never called; `statusCode` parameter flows through store methods unused; DESIGN.md stale in multiple places; bot handlers/callbacks untested
+- **Tech debt resolved (Phase 1):** Scheduler now depends on Checker interface; FormatFailureWithCode is live code; statusCode persisted via migration 003; endpoint name validation added
 
 ## Constraints
 
@@ -73,7 +73,7 @@ Reliable uptime monitoring with zero-friction setup — one Docker container, on
 |----------|-----------|---------|
 | Telegram-only interface | Keeps project simple, no frontend to maintain, unique angle for portfolio | ✓ Good |
 | SQLite over PostgreSQL | Single container simplicity, no external DB dependency, sufficient for scale | ✓ Good |
-| Fix tech debt before adding features | Solid foundation prevents compounding issues | — Pending |
+| Fix tech debt before adding features | Solid foundation prevents compounding issues | ✓ Phase 1 complete |
 | Add GitHub Actions CI | Shows professionalism, enables badge in README, catches regressions | — Pending |
 | Professional README with badges/diagrams | First impression for portfolio visitors — must be polished | — Pending |
 
@@ -95,4 +95,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-26 after initialization*
+*Last updated: 2026-03-26 after Phase 1 completion*
