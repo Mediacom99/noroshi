@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -127,6 +128,137 @@ func (n *mockNotifier) recoveryCount() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return len(n.recoveries)
+}
+
+// mockChecker implements Checker for deterministic testing without HTTP.
+type mockChecker struct {
+	checkFn func(ctx context.Context, url string) (int, error)
+}
+
+func (m *mockChecker) Check(ctx context.Context, url string) (int, error) {
+	return m.checkFn(ctx, url)
+}
+
+func newMockScheduler(t *testing.T, store *mockStore, checker *mockChecker, notifier *mockNotifier, maxFail int) *Scheduler {
+	t.Helper()
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxFail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sched
+}
+
+func TestCheckAndNotifyMockOK(t *testing.T) {
+	store := newMockStore()
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
+	notifier := &mockNotifier{}
+	checker := &mockChecker{
+		checkFn: func(_ context.Context, _ string) (int, error) {
+			return 200, nil
+		},
+	}
+
+	sched := newMockScheduler(t, store, checker, notifier, 3)
+	sched.checkAndNotify(1)
+
+	if notifier.failureCount() != 0 {
+		t.Error("should not notify failure when endpoint stays OK")
+	}
+	if notifier.recoveryCount() != 0 {
+		t.Error("should not notify recovery when endpoint was already OK")
+	}
+
+	ep, _ := store.GetEndpoint(context.Background(), 1)
+	if ep.Status != "ok" {
+		t.Errorf("status = %q, want ok", ep.Status)
+	}
+}
+
+func TestCheckAndNotifyMockFailure(t *testing.T) {
+	store := newMockStore()
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
+	notifier := &mockNotifier{}
+	checker := &mockChecker{
+		checkFn: func(_ context.Context, _ string) (int, error) {
+			return 503, nil
+		},
+	}
+
+	sched := newMockScheduler(t, store, checker, notifier, 3)
+	sched.checkAndNotify(1)
+
+	if notifier.failureCount() != 1 {
+		t.Errorf("failure notifications = %d, want 1", notifier.failureCount())
+	}
+}
+
+func TestCheckAndNotifyMockConnectionError(t *testing.T) {
+	store := newMockStore()
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
+	notifier := &mockNotifier{}
+	checker := &mockChecker{
+		checkFn: func(_ context.Context, _ string) (int, error) {
+			return 0, fmt.Errorf("connection refused")
+		},
+	}
+
+	sched := newMockScheduler(t, store, checker, notifier, 3)
+	sched.checkAndNotify(1)
+
+	if notifier.failureCount() != 1 {
+		t.Errorf("failure notifications = %d, want 1 (connection error is a failure)", notifier.failureCount())
+	}
+}
+
+func TestCheckAndNotifyMockFailureCap(t *testing.T) {
+	store := newMockStore()
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
+	notifier := &mockNotifier{}
+	checker := &mockChecker{
+		checkFn: func(_ context.Context, _ string) (int, error) {
+			return 500, nil
+		},
+	}
+
+	maxNotifications := 3
+	sched := newMockScheduler(t, store, checker, notifier, maxNotifications)
+
+	for range 5 {
+		sched.checkAndNotify(1)
+	}
+
+	if notifier.failureCount() != maxNotifications {
+		t.Errorf("failure notifications = %d, want %d (capped)", notifier.failureCount(), maxNotifications)
+	}
+}
+
+func TestCheckAndNotifyMockRecovery(t *testing.T) {
+	store := newMockStore()
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
+	notifier := &mockNotifier{}
+
+	returnFailure := true
+	checker := &mockChecker{
+		checkFn: func(_ context.Context, _ string) (int, error) {
+			if returnFailure {
+				return 503, nil
+			}
+			return 200, nil
+		},
+	}
+
+	sched := newMockScheduler(t, store, checker, notifier, 3)
+
+	// First call: failure
+	sched.checkAndNotify(1)
+
+	// Second call: recovery
+	returnFailure = false
+	sched.checkAndNotify(1)
+
+	if notifier.recoveryCount() != 1 {
+		t.Errorf("recovery notifications = %d, want 1", notifier.recoveryCount())
+	}
 }
 
 func TestCheckAndNotifyOK(t *testing.T) {

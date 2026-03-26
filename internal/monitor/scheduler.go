@@ -19,6 +19,11 @@ type Store interface {
 	RecordRecovery(ctx context.Context, id int64, statusCode int) (storage.Endpoint, error)
 }
 
+// Checker performs HTTP health checks.
+type Checker interface {
+	Check(ctx context.Context, url string) (int, error)
+}
+
 // Notifier sends failure and recovery notifications.
 type Notifier interface {
 	NotifyFailure(ctx context.Context, endpoint storage.Endpoint) error
@@ -29,14 +34,14 @@ type Notifier interface {
 type Scheduler struct {
 	cron                    gocron.Scheduler
 	store                   Store
-	checker                 *HTTPChecker
+	checker                 Checker
 	notifier                Notifier
 	maxFailureNotifications int
 	ctx                     context.Context
 }
 
 // NewScheduler creates a Scheduler. Call Start() to begin running jobs.
-func NewScheduler(ctx context.Context, store Store, checker *HTTPChecker, notifier Notifier, maxFailureNotifications int) (*Scheduler, error) {
+func NewScheduler(ctx context.Context, store Store, checker Checker, notifier Notifier, maxFailureNotifications int) (*Scheduler, error) {
 	cron, err := gocron.NewScheduler()
 	if err != nil {
 		return nil, fmt.Errorf("create gocron scheduler: %w", err)
