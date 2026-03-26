@@ -30,7 +30,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The statusCode parameter is either persisted to a database column or removed from all store method signatures
   4. No exported function or type exists that is unused by any caller in the codebase
   5. Endpoint names are validated on creation: only alphanumeric characters, hyphens, and underscores are accepted, with a maximum length of 50
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 01-01-PLAN.md -- Checker interface extraction and last_status_code storage persistence
+- [ ] 01-02-PLAN.md -- Status code notification wiring, dead code sweep, name validation
 
 ### Phase 2: Bot Handler Tests
 **Goal**: Every bot command handler and callback handler has table-driven tests covering success and error paths, built on shared mock infrastructure
@@ -84,7 +87,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Interface Cleanup and Tech Debt | 0/? | Not started | - |
+| 1. Interface Cleanup and Tech Debt | 0/2 | Planning complete | - |
 | 2. Bot Handler Tests | 0/? | Not started | - |
 | 3. CI Pipeline | 0/? | Not started | - |
 | 4. Feature Completion | 0/? | Not started | - |
