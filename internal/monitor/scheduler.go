@@ -30,11 +30,6 @@ type Notifier interface {
 	NotifyRecovery(ctx context.Context, endpoint storage.Endpoint, downtime time.Duration) error
 }
 
-// Checker performs HTTP health checks.
-type Checker interface {
-	Check(ctx context.Context, url string) (int, error)
-}
-
 // Scheduler manages periodic health checks using gocron.
 type Scheduler struct {
 	cron                    gocron.Scheduler
