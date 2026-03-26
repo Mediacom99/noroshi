@@ -17,8 +17,8 @@
 
 - [ ] **TEST-01**: Shared mock infrastructure for `tele.Context` interface using struct embedding pattern in `internal/bot/mock_test.go`
 - [ ] **TEST-02**: Table-driven tests for all bot command handlers (`/add`, `/delete`, `/list`, `/interval`, `/help`)
-- [ ] **TEST-03**: Tests for bot callback handlers (detail view, refresh, back, delete confirmation)
-- [ ] **TEST-04**: Scheduler tests use mock Checker interface instead of real HTTP servers
+- [x] **TEST-03**: Tests for bot callback handlers (detail view, refresh, back, delete confirmation)
+- [x] **TEST-04**: Scheduler tests use mock Checker interface instead of real HTTP servers
 
 ### CI/CD
 
@@ -88,8 +88,8 @@ Deferred to future milestone. Tracked but not in current roadmap.
 | QUAL-05 | Phase 1 | Complete |
 | TEST-01 | Phase 2 | Pending |
 | TEST-02 | Phase 2 | Pending |
-| TEST-03 | Phase 2 | Pending |
-| TEST-04 | Phase 2 | Pending |
+| TEST-03 | Phase 2 | Complete |
+| TEST-04 | Phase 2 | Complete |
 | CICD-01 | Phase 3 | Pending |
 | CICD-02 | Phase 3 | Pending |
 | CICD-03 | Phase 3 | Pending |

@@ -46,8 +46,8 @@ Plans:
   4. Scheduler tests use mock Checker interface instead of real HTTP servers, making all tests deterministic
 **Plans:** 2 plans
 Plans:
-- [ ] 02-01-PLAN.md -- Mock infrastructure and command handler tests (TEST-01, TEST-02)
-- [ ] 02-02-PLAN.md -- Callback handler tests and mock-based scheduler tests (TEST-03, TEST-04)
+- [x] 02-01-PLAN.md -- Mock infrastructure and command handler tests (TEST-01, TEST-02)
+- [x] 02-02-PLAN.md -- Callback handler tests and mock-based scheduler tests (TEST-03, TEST-04)
 
 ### Phase 3: CI Pipeline
 **Goal**: Every push to develop and main is automatically built, vetted, tested, and linted, with all checks passing green
