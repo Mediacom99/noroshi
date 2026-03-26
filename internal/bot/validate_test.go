@@ -1,6 +1,9 @@
 package bot
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidateURL(t *testing.T) {
 	tests := []struct {
@@ -28,6 +31,39 @@ func TestValidateURL(t *testing.T) {
 			err := ValidateURL(tt.url)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateURL(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateName(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"valid lowercase with hyphen", "prod-api", false},
+		{"valid mixed case", "MyAPI", false},
+		{"valid underscore and digit", "site_1", false},
+		{"valid single char", "a", false},
+		{"valid hyphen in middle", "a-b", false},
+		{"valid at 50 chars", strings.Repeat("a", 50), false},
+		{"valid underscore at start", "_ok", false},
+		{"empty string", "", true},
+		{"too long 51 chars", strings.Repeat("a", 51), true},
+		{"starts with hyphen", "-api", true},
+		{"ends with hyphen", "api-", true},
+		{"contains space", "prod api", true},
+		{"contains dot", "prod.api", true},
+		{"contains at sign", "prod@api", true},
+		{"contains slash", "a/b", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateName(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateName(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
 			}
 		})
 	}
