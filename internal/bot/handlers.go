@@ -31,6 +31,9 @@ func (b *Bot) handleAdd(c tele.Context) error {
 	}
 
 	name := args[0]
+	if err := ValidateName(name); err != nil {
+		return c.Send(err.Error())
+	}
 	rawURL := args[1]
 	if err := ValidateURL(rawURL); err != nil {
 		return c.Send("Invalid URL. Must be a valid http:// or https:// address.")

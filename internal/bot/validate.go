@@ -6,6 +6,22 @@ import (
 	"strings"
 )
 
+// ValidateName checks that name contains only allowed characters and follows naming rules.
+func ValidateName(name string) error {
+	if len(name) == 0 || len(name) > 50 {
+		return fmt.Errorf("Name must be 1-50 characters: letters, numbers, hyphens, underscores")
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return fmt.Errorf("Name must be 1-50 characters: letters, numbers, hyphens, underscores")
+		}
+	}
+	if name[0] == '-' || name[len(name)-1] == '-' {
+		return fmt.Errorf("Name must not start or end with a hyphen")
+	}
+	return nil
+}
+
 // ValidateURL checks that raw is a well-formed HTTP(S) URL with a real-looking host.
 func ValidateURL(raw string) error {
 	parsed, err := url.Parse(raw)
