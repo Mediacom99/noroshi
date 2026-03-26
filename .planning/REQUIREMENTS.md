@@ -81,35 +81,35 @@ Deferred to future milestone. Tracked but not in current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| QUAL-01 | — | Pending |
-| QUAL-02 | — | Pending |
-| QUAL-03 | — | Pending |
-| QUAL-04 | — | Pending |
-| QUAL-05 | — | Pending |
-| TEST-01 | — | Pending |
-| TEST-02 | — | Pending |
-| TEST-03 | — | Pending |
-| TEST-04 | — | Pending |
-| CICD-01 | — | Pending |
-| CICD-02 | — | Pending |
-| CICD-03 | — | Pending |
-| CICD-04 | — | Pending |
-| FEAT-01 | — | Pending |
-| FEAT-02 | — | Pending |
-| FEAT-03 | — | Pending |
-| FEAT-04 | — | Pending |
-| DOCS-01 | — | Pending |
-| DOCS-02 | — | Pending |
-| DOCS-03 | — | Pending |
-| DOCS-04 | — | Pending |
-| DOCS-05 | — | Pending |
-| DOCS-06 | — | Pending |
+| QUAL-01 | Phase 1 | Pending |
+| QUAL-02 | Phase 1 | Pending |
+| QUAL-03 | Phase 1 | Pending |
+| QUAL-04 | Phase 1 | Pending |
+| QUAL-05 | Phase 1 | Pending |
+| TEST-01 | Phase 2 | Pending |
+| TEST-02 | Phase 2 | Pending |
+| TEST-03 | Phase 2 | Pending |
+| TEST-04 | Phase 2 | Pending |
+| CICD-01 | Phase 3 | Pending |
+| CICD-02 | Phase 3 | Pending |
+| CICD-03 | Phase 3 | Pending |
+| CICD-04 | Phase 3 | Pending |
+| FEAT-01 | Phase 4 | Pending |
+| FEAT-02 | Phase 4 | Pending |
+| FEAT-03 | Phase 4 | Pending |
+| FEAT-04 | Phase 4 | Pending |
+| DOCS-01 | Phase 5 | Pending |
+| DOCS-02 | Phase 5 | Pending |
+| DOCS-03 | Phase 5 | Pending |
+| DOCS-04 | Phase 5 | Pending |
+| DOCS-05 | Phase 5 | Pending |
+| DOCS-06 | Phase 5 | Pending |
 
 **Coverage:**
 - v1 requirements: 23 total
-- Mapped to phases: 0
-- Unmapped: 23 ⚠️
+- Mapped to phases: 23
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-26*
-*Last updated: 2026-03-26 after initial definition*
+*Last updated: 2026-03-26 after roadmap creation*
