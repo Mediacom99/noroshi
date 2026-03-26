@@ -177,6 +177,7 @@ func TestFormatEndpointDetail(t *testing.T) {
 		IntervalSeconds:     30,
 		Status:              "not_ok",
 		ConsecutiveFailures: 3,
+		LastStatusCode:      503,
 		LastCheckedAt:       sql.NullTime{Time: time.Date(2026, 3, 13, 14, 32, 5, 0, time.UTC), Valid: true},
 	}
 
@@ -191,6 +192,7 @@ func TestFormatEndpointDetail(t *testing.T) {
 		{"interval", "30s"},
 		{"status", "not_ok"},
 		{"failures", "3 failures"},
+		{"http status", "<b>HTTP:</b> 503"},
 		{"last check", "14:32:05 UTC"},
 	}
 	for _, c := range checks {
@@ -205,6 +207,25 @@ func TestFormatEndpointDetail(t *testing.T) {
 	// Row 1: interval + delete, Row 2: back
 	if len(markup.InlineKeyboard) != 2 {
 		t.Errorf("expected 2 keyboard rows, got %d", len(markup.InlineKeyboard))
+	}
+}
+
+func TestFormatEndpointDetailNoStatusCode(t *testing.T) {
+	ep := storage.Endpoint{
+		ID:                  1,
+		Name:                "failing-ep",
+		URL:                 "https://down.com",
+		IntervalSeconds:     30,
+		Status:              "not_ok",
+		ConsecutiveFailures: 2,
+		LastStatusCode:      0,
+		LastCheckedAt:       sql.NullTime{Time: time.Date(2026, 3, 13, 14, 32, 5, 0, time.UTC), Valid: true},
+	}
+
+	text, _ := FormatEndpointDetail(ep)
+
+	if strings.Contains(text, "<b>HTTP:</b>") {
+		t.Error("should not show HTTP status line when LastStatusCode is 0")
 	}
 }
 

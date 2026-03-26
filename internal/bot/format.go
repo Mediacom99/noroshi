@@ -163,6 +163,10 @@ func FormatEndpointDetail(ep storage.Endpoint) (string, *tele.ReplyMarkup) {
 		fmt.Fprintf(&b, " (%d failures)", ep.ConsecutiveFailures)
 	}
 
+	if ep.Status == "not_ok" && ep.LastStatusCode > 0 {
+		fmt.Fprintf(&b, "\n<b>HTTP:</b> %d", ep.LastStatusCode)
+	}
+
 	if ep.LastCheckedAt.Valid {
 		fmt.Fprintf(&b, "\n<b>Last check:</b> %s", ep.LastCheckedAt.Time.UTC().Format("15:04:05 UTC"))
 	} else {

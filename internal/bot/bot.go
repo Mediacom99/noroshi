@@ -129,7 +129,12 @@ func NewTelegramNotifier(bot *Bot, maxFail int) *TelegramNotifier {
 
 // NotifyFailure sends a failure notification to the configured chat.
 func (n *TelegramNotifier) NotifyFailure(ctx context.Context, ep storage.Endpoint) error {
-	msg := FormatFailure(ep, n.maxFail)
+	var msg string
+	if ep.LastStatusCode > 0 {
+		msg = FormatFailureWithCode(ep, ep.LastStatusCode, n.maxFail)
+	} else {
+		msg = FormatFailure(ep, n.maxFail)
+	}
 	return n.bot.SendMessage(msg)
 }
 
