@@ -16,5 +16,6 @@ type Endpoint struct {
 	LastFailureAt            sql.NullTime
 	ConsecutiveFailures      int
 	FailureNotificationsSent int
+	LastStatusCode           int
 	CreatedAt                time.Time
 }

@@ -79,6 +79,9 @@ func TestAddAndGetEndpoint(t *testing.T) {
 	if ep.Status != "unknown" {
 		t.Errorf("Status = %q, want %q", ep.Status, "unknown")
 	}
+	if ep.LastStatusCode != 0 {
+		t.Errorf("LastStatusCode = %d, want 0", ep.LastStatusCode)
+	}
 
 	got, err := store.GetEndpoint(ctx, ep.ID)
 	if err != nil {
@@ -213,6 +216,9 @@ func TestRecordFailure(t *testing.T) {
 	if !updated.LastFailureAt.Valid {
 		t.Error("LastFailureAt should be set on first failure")
 	}
+	if updated.LastStatusCode != 503 {
+		t.Errorf("LastStatusCode = %d, want 503", updated.LastStatusCode)
+	}
 
 	// Second failure
 	updated2, err := store.RecordFailure(ctx, ep.ID, 503)
@@ -250,6 +256,9 @@ func TestRecordRecovery(t *testing.T) {
 	}
 	if recovered.FailureNotificationsSent != 0 {
 		t.Errorf("FailureNotificationsSent = %d, want 0", recovered.FailureNotificationsSent)
+	}
+	if recovered.LastStatusCode != 200 {
+		t.Errorf("LastStatusCode = %d, want 200", recovered.LastStatusCode)
 	}
 	// Should still have the old LastFailureAt for downtime calculation
 	if !recovered.LastFailureAt.Valid {
@@ -360,5 +369,8 @@ func TestUpdateEndpointStatus(t *testing.T) {
 	}
 	if !updated.LastCheckedAt.Valid {
 		t.Error("LastCheckedAt should be set after status update")
+	}
+	if updated.LastStatusCode != 200 {
+		t.Errorf("LastStatusCode = %d, want 200", updated.LastStatusCode)
 	}
 }
