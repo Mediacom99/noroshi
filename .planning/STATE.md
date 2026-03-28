@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: "Completed 03-ci-pipeline Plan 01: golangci-lint config and errorlint fixes"
-last_updated: "2026-03-28T10:02:03.920Z"
+status: verifying
+stopped_at: "Checkpoint: Task 2 human-verify — awaiting CI green confirmation and branch protection setup"
+last_updated: "2026-03-28T10:05:41.505Z"
 last_activity: 2026-03-28
 progress:
   total_phases: 5
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 6
-  completed_plans: 5
+  completed_plans: 6
   percent: 0
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 
 Phase: 03 (ci-pipeline) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-03-28
 
 Progress: [..........] 0%
@@ -54,6 +54,7 @@ Progress: [..........] 0%
 *Updated after each plan completion*
 | Phase 02 P02 | 5min | 2 tasks | 3 files |
 | Phase 03-ci-pipeline P01 | 2min | 2 tasks | 4 files |
+| Phase 03-ci-pipeline P02 | 1min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -67,6 +68,7 @@ Recent decisions affecting current work:
 - [Phase 02]: Extracted Checker interface from concrete *HTTPChecker in scheduler.go to enable mock-based testing
 - [Phase 03-ci-pipeline]: golangci-lint v2 with linters.default: none enables exactly 5 linters with no surprise extras
 - [Phase 03-ci-pipeline]: All errorlint findings fixed as real code changes per D-04 — no nolint suppressions for pre-existing code
+- [Phase 03-ci-pipeline]: golangci-lint-action@v9 with version v2.11.4 reads .golangci.yml automatically; parallel jobs via no needs: between lint and build-and-test
 
 ### Pending Todos
 
@@ -78,6 +80,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-28T10:02:03.918Z
-Stopped at: Completed 03-ci-pipeline Plan 01: golangci-lint config and errorlint fixes
+Last session: 2026-03-28T10:05:41.503Z
+Stopped at: Checkpoint: Task 2 human-verify — awaiting CI green confirmation and branch protection setup
 Resume file: None

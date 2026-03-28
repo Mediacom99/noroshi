@@ -22,10 +22,10 @@
 
 ### CI/CD
 
-- [ ] **CICD-01**: GitHub Actions workflow with parallel lint and test jobs
+- [x] **CICD-01**: GitHub Actions workflow with parallel lint and test jobs
 - [x] **CICD-02**: golangci-lint v2 configuration with Go-specific linters (contextcheck, bodyclose, sqlclosecheck, errorlint, sloglint)
-- [ ] **CICD-03**: Build verification with `CGO_ENABLED=0 go build ./cmd/monitor/`
-- [ ] **CICD-04**: `go vet ./...` passes in CI
+- [x] **CICD-03**: Build verification with `CGO_ENABLED=0 go build ./cmd/monitor/`
+- [x] **CICD-04**: `go vet ./...` passes in CI
 
 ### Features
 
@@ -90,10 +90,10 @@ Deferred to future milestone. Tracked but not in current roadmap.
 | TEST-02 | Phase 2 | Pending |
 | TEST-03 | Phase 2 | Complete |
 | TEST-04 | Phase 2 | Complete |
-| CICD-01 | Phase 3 | Pending |
+| CICD-01 | Phase 3 | Complete |
 | CICD-02 | Phase 3 | Complete |
-| CICD-03 | Phase 3 | Pending |
-| CICD-04 | Phase 3 | Pending |
+| CICD-03 | Phase 3 | Complete |
+| CICD-04 | Phase 3 | Complete |
 | FEAT-01 | Phase 4 | Pending |
 | FEAT-02 | Phase 4 | Pending |
 | FEAT-03 | Phase 4 | Pending |
