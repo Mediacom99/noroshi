@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -83,7 +84,7 @@ func (s *SQLiteStore) GetEndpoint(ctx context.Context, id int64) (Endpoint, erro
 		&ep.LastCheckedAt, &ep.LastFailureAt,
 		&ep.ConsecutiveFailures, &ep.FailureNotificationsSent, &ep.LastStatusCode, &ep.CreatedAt)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return Endpoint{}, apperror.Wrap(apperror.ErrNotFound, err)
 	}
 	if err != nil {
@@ -102,7 +103,7 @@ func (s *SQLiteStore) GetEndpointByURL(ctx context.Context, url string) (Endpoin
 		&ep.LastCheckedAt, &ep.LastFailureAt,
 		&ep.ConsecutiveFailures, &ep.FailureNotificationsSent, &ep.LastStatusCode, &ep.CreatedAt)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return Endpoint{}, apperror.Wrap(apperror.ErrNotFound, err)
 	}
 	if err != nil {
@@ -121,7 +122,7 @@ func (s *SQLiteStore) GetEndpointByName(ctx context.Context, name string) (Endpo
 		&ep.LastCheckedAt, &ep.LastFailureAt,
 		&ep.ConsecutiveFailures, &ep.FailureNotificationsSent, &ep.LastStatusCode, &ep.CreatedAt)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return Endpoint{}, apperror.Wrap(apperror.ErrNotFound, err)
 	}
 	if err != nil {
