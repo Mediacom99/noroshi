@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 3 context gathered
-last_updated: "2026-03-28T09:12:56.710Z"
-last_activity: 2026-03-26
+stopped_at: "Completed 03-ci-pipeline Plan 01: golangci-lint config and errorlint fixes"
+last_updated: "2026-03-28T10:02:03.920Z"
+last_activity: 2026-03-28
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 4
-  completed_plans: 4
+  total_plans: 6
+  completed_plans: 5
   percent: 0
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-26)
 
 **Core value:** Reliable uptime monitoring with zero-friction setup -- one Docker container, one Telegram bot, no dashboards to maintain.
-**Current focus:** Phase 02 — bot-handler-tests
+**Current focus:** Phase 03 — ci-pipeline
 
 ## Current Position
 
-Phase: 3
-Plan: Not started
+Phase: 03 (ci-pipeline) — EXECUTING
+Plan: 2 of 2
 Status: Ready to execute
-Last activity: 2026-03-26
+Last activity: 2026-03-28
 
 Progress: [..........] 0%
 
@@ -53,6 +53,7 @@ Progress: [..........] 0%
 
 *Updated after each plan completion*
 | Phase 02 P02 | 5min | 2 tasks | 3 files |
+| Phase 03-ci-pipeline P01 | 2min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -64,6 +65,8 @@ Recent decisions affecting current work:
 - Roadmap: Fix tech debt before features (interfaces unblock tests, tests unblock CI)
 - Roadmap: 5-phase structure derived from dependency chain (interfaces -> tests -> CI -> features -> docs)
 - [Phase 02]: Extracted Checker interface from concrete *HTTPChecker in scheduler.go to enable mock-based testing
+- [Phase 03-ci-pipeline]: golangci-lint v2 with linters.default: none enables exactly 5 linters with no surprise extras
+- [Phase 03-ci-pipeline]: All errorlint findings fixed as real code changes per D-04 — no nolint suppressions for pre-existing code
 
 ### Pending Todos
 
@@ -75,6 +78,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-28T09:12:56.708Z
-Stopped at: Phase 3 context gathered
-Resume file: .planning/phases/03-ci-pipeline/03-CONTEXT.md
+Last session: 2026-03-28T10:02:03.918Z
+Stopped at: Completed 03-ci-pipeline Plan 01: golangci-lint config and errorlint fixes
+Resume file: None
