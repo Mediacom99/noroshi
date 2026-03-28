@@ -1,0 +1,13 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - errorlint
+    - sloglint
+    - sqlclosecheck
+
+run:
+  timeout: 5m
