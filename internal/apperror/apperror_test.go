@@ -27,7 +27,7 @@ func TestUnwrapReturnsCause(t *testing.T) {
 	cause := fmt.Errorf("underlying")
 	wrapped := Wrap(ErrDatabase, cause)
 
-	if wrapped.Unwrap() != cause {
+	if !errors.Is(wrapped.Unwrap(), cause) {
 		t.Fatal("Unwrap should return the original cause")
 	}
 }
