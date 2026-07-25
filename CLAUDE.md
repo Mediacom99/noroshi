@@ -32,10 +32,17 @@ These are the ONLY external dependencies. NEVER add others without explicit appr
 
 ## Testing Requirements
 
-- Every non-main package MUST have `_test.go` files. Exception: `internal/bot/` (requires Telegram API).
+- Every non-main package MUST have `_test.go` files, including `internal/bot/` (handlers and callbacks are tested with mock `tele.Context`).
 - Use stdlib `testing` only — no testify, no gomock.
 - Use table-driven tests where applicable.
 - `go test ./...` MUST pass before every commit.
+
+## Monitoring Rules
+
+- Any HTTP 2xx status counts as UP; everything else (3xx, 4xx, 5xx, connection errors) is DOWN.
+- gocron jobs MUST use `gocron.WithSingletonMode(gocron.LimitModeReschedule)` — checks for the same endpoint must never overlap.
+- `failure_notifications_sent` is capped at `MAX_FAILURE_NOTIFICATIONS` in `RecordFailure`; notify only when the counter actually increments.
+- Ad-hoc checks (`/status` → `Scheduler.CheckNow`) never touch failure counters and never send notifications.
 
 ## Code Style
 

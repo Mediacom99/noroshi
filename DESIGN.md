@@ -1,6 +1,6 @@
 # Noroshi — Design Document
 
-Complete technical reference for architecture decisions and implementation patterns.
+Technical reference for architecture decisions and implementation patterns. For user-facing docs see README.md.
 
 ## Project Structure
 
@@ -17,403 +17,172 @@ noroshi/
 │   │   ├── config.go                    # Config struct, Load() from env vars
 │   │   └── config_test.go
 │   ├── bot/
-│   │   ├── bot.go                       # Bot struct, init, SetScheduler, TelegramNotifier
-│   │   ├── handlers.go                  # Command handlers (/add, /delete, /status, /list, /interval, /help)
-│   │   ├── format.go                    # Message formatting (failure, recovery, list, status, help)
-│   │   └── format_test.go
+│   │   ├── bot.go                       # Bot struct, Store/Scheduler/Checker interfaces, TelegramNotifier
+│   │   ├── handlers.go                  # Command handlers (/add, /delete, /list, /status, /interval, /help)
+│   │   ├── callbacks.go                 # Inline keyboard callbacks (detail, delete, interval, refresh)
+│   │   ├── format.go                    # Message formatting + callback unique IDs
+│   │   ├── validate.go                  # Name/URL validation
+│   │   └── *_test.go                    # Handler, callback, format, validate tests + mocks
 │   ├── monitor/
-│   │   ├── checker.go                   # retryablehttp-based health checker
-│   │   ├── checker_test.go
-│   │   ├── scheduler.go                 # gocron-based scheduler with check-and-notify logic
-│   │   └── scheduler_test.go
+│   │   ├── checker.go                   # retryablehttp-based health checker (returns code + latency)
+│   │   ├── scheduler.go                 # gocron scheduler, checkAndNotify, CheckNow
+│   │   └── *_test.go
 │   └── storage/
-│       ├── migrations/
-│       │   └── 001_create_endpoints.sql # goose migration
+│       ├── migrations/                  # goose migrations 001–004
 │       ├── models.go                    # Endpoint struct
-│       ├── store.go                     # SQLiteStore implementation
+│       ├── store.go                     # OpenDB, RunMigrations, SQLiteStore
 │       └── store_test.go
-├── Dockerfile
+├── .github/workflows/                   # ci.yml (lint, build, vet, test), release.yml (GHCR)
+├── Dockerfile                           # Multi-stage, non-root, HEALTHCHECK on ${HEALTH_PORT:-8080}
 ├── docker-compose.yml
-├── .env.example
-├── go.mod
-└── go.sum
+├── entrypoint.sh                        # Volume permission fix + privilege drop
+└── .golangci.yml                        # bodyclose, contextcheck, errorlint, sloglint, sqlclosecheck
 ```
 
 ## Startup Flow
 
-1. `config.Load()` — read env vars, validate, return `Config` struct.
-2. Open SQLite with `_journal_mode=WAL&_busy_timeout=5000`.
-3. Run goose migrations (`goose.Up`).
-4. Create `SQLiteStore` with the `*sql.DB`.
-5. Create Telegram `Bot` (without scheduler — see Circular Dependency Resolution below).
-6. Create `TelegramNotifier` from the bot (implements `Notifier` interface).
-7. Create gocron `Scheduler` with store, checker, and notifier.
-8. Call `bot.SetScheduler(scheduler)` to close the circular dependency.
-9. Load all endpoints from DB → call `scheduler.Add` for each.
-10. Start gocron scheduler (`s.Start()`).
-11. Start Telegram bot poller (in a goroutine).
-12. Start health HTTP server on `HEALTH_PORT` (in a goroutine).
-13. Block on `<-ctx.Done()` (from `signal.NotifyContext`).
-14. Graceful shutdown: stop bot, `scheduler.Shutdown()`, close DB.
+1. `config.Load()` — read env vars, validate, return `Config`.
+2. `storage.OpenDB(path)` — SQLite with `_journal_mode=WAL&_busy_timeout=5000`.
+3. `storage.RunMigrations(db)` — `goose.Up` over embedded migrations.
+4. `storage.NewSQLiteStore(db)`.
+5. `monitor.NewHTTPChecker(cfg.HTTPTimeout)`.
+6. `bot.NewBot(token, chatID, store, checker, ctx)` — no scheduler yet (circular dependency, see below).
+7. `bot.NewTelegramNotifier(bot, maxFailureNotifications)` — implements `monitor.Notifier`.
+8. `monitor.NewScheduler(ctx, store, checker, notifier, maxFailureNotifications)`.
+9. `bot.SetScheduler(scheduler)` — closes the circular dependency.
+10. Load all endpoints from DB → `scheduler.Add(ctx, ep)` for each.
+11. `scheduler.Start()`, `bot.Start()` (goroutine), health server on `HEALTH_PORT` (goroutine).
+12. Block on `<-ctx.Done()`; graceful shutdown: `bot.Stop()` → `scheduler.Shutdown()` (waits for running jobs) → health server `Shutdown()` → `db.Close()`.
 
 ## Circular Dependency Resolution
 
-The bot needs the scheduler (to add/delete endpoints), and the scheduler needs the notifier (which wraps the bot for sending messages). Resolve this:
+The bot needs the scheduler (add/remove jobs, `CheckNow`), and the scheduler needs the notifier (which wraps the bot). Resolution: create bot first, then notifier from bot, then scheduler with notifier, finally `bot.SetScheduler(scheduler)`. Bot handlers nil-check the scheduler before use.
 
-1. Create bot first (no scheduler yet).
-2. Create notifier from bot (it only needs bot's `Send` capability).
-3. Create scheduler with notifier.
-4. Call `bot.SetScheduler(scheduler)` — bot stores scheduler reference for handlers.
+## Context & Shutdown
 
-## Graceful Shutdown
-
-- `signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)` in `main.go` creates the root context. This is the ONLY place `context.Background()` is used.
-- The root context flows to: gocron scheduler, bot handlers, checker HTTP requests.
-- Shutdown sequence: cancel root ctx → stop bot poller → `scheduler.Shutdown()` (waits for running jobs) → close DB.
+- `signal.NotifyContext(context.Background(), SIGINT, SIGTERM)` in `main.go` is the ONLY `context.Background()` outside tests and the health-server shutdown.
+- The root context is stored on `Bot` (`rootCtx`) and `Scheduler` (`ctx`) and flows into all store/HTTP calls.
 
 ## gocron Scheduler Pattern
 
 ```go
-import "github.com/go-co-op/gocron/v2"
+s, _ := gocron.NewScheduler()
+s.Start() // non-blocking
 
-// Create
-s, err := gocron.NewScheduler()
-
-// Start (non-blocking)
-s.Start()
-
-// Add a job for an endpoint
-job, err := s.NewJob(
-    gocron.DurationJob(time.Duration(endpoint.IntervalSeconds) * time.Second),
-    gocron.NewTask(checkAndNotify, ctx, endpoint.ID),
-    gocron.WithTags(fmt.Sprintf("endpoint-%d", endpoint.ID)),
+job, _ := s.NewJob(
+    gocron.DurationJob(time.Duration(ep.IntervalSeconds) * time.Second),
+    gocron.NewTask(s.checkAndNotify, ep.ID),
+    gocron.WithTags(fmt.Sprintf("endpoint-%d", ep.ID)),
+    gocron.WithStartAt(gocron.WithStartImmediately()),   // first check right away
+    gocron.WithSingletonMode(gocron.LimitModeReschedule), // never overlap checks for one endpoint
 )
 
-// Remove a job by endpoint ID
-s.RemoveByTags(fmt.Sprintf("endpoint-%d", endpoint.ID))
-
-// Update interval: remove old job, add new one
-s.RemoveByTags(fmt.Sprintf("endpoint-%d", endpoint.ID))
-s.NewJob(gocron.DurationJob(newInterval), ...)
-
-// Shutdown (blocks until running jobs finish)
-s.Shutdown()
+s.RemoveByTags("endpoint-1") // remove by tag
+s.Shutdown()                 // blocks until running jobs finish
 ```
 
-**DO NOT** use manual goroutines, `sync.Mutex`, cancel func maps, or `time.Ticker`. gocron handles all of this internally.
+- **Singleton mode is mandatory**: a check slower than the interval must never overlap the next run — concurrent runs would race on the failure counters.
+- **DO NOT** hand-roll scheduling with goroutines/`time.Ticker`/`sync.Mutex`.
 
-The `checkAndNotify` function (or method) is passed to `gocron.NewTask`. It:
-1. Loads the endpoint from the store (to get current state).
-2. Calls the checker to perform the HTTP health check.
-3. Updates the endpoint status in the store.
-4. Calls the notifier if notification rules apply (see Notification Behavior).
+## Checker
 
-## retryablehttp Checker Pattern
+retryablehttp with `RetryMax=2`, `RetryWaitMin=500ms`, `RetryWaitMax=2s`, per-request timeout from config, default retry policy (connection errors + 5xx, never 4xx), and `PassthroughErrorHandler` so the last response is returned after retries are exhausted. `Check` returns `(statusCode, latency, error)` and drains the response body for keep-alive reuse.
 
-```go
-import "github.com/hashicorp/go-retryablehttp"
+**Success rule: any HTTP 2xx is UP.** Everything else — 3xx, 4xx, 5xx, connection error — is DOWN.
 
-client := retryablehttp.NewClient()
-client.RetryMax = 2
-client.RetryWaitMin = 500 * time.Millisecond
-client.RetryWaitMax = 2 * time.Second
-client.HTTPClient.Timeout = cfg.HTTPTimeout
-client.Logger = nil // silence default logger
-
-req, err := retryablehttp.NewRequestWithContext(ctx, "GET", url, nil)
-resp, err := client.Do(req)
-```
-
-retryablehttp retries on connection errors and 5xx responses by default. It does NOT retry 4xx. This eliminates false-positive alerts from transient network issues.
-
-## goose Migrations Pattern
-
-Migration file `internal/storage/migrations/001_create_endpoints.sql`:
+## Database Schema (after migrations 001–004)
 
 ```sql
--- +goose Up
 CREATE TABLE endpoints (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
     url TEXT NOT NULL UNIQUE,
     interval_seconds INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'unknown',
+    status TEXT NOT NULL DEFAULT 'unknown',   -- 'unknown' | 'ok' | 'not_ok'
     last_checked_at DATETIME,
     last_failure_at DATETIME,
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     failure_notifications_sent INTEGER NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_status_code INTEGER NOT NULL DEFAULT 0,   -- 003
+    last_latency_ms INTEGER NOT NULL DEFAULT 0     -- 004
 );
-
--- +goose Down
-DROP TABLE endpoints;
 ```
 
-Running migrations in Go:
-
-```go
-import (
-    "embed"
-    "github.com/pressly/goose/v3"
-)
-
-//go:embed migrations/*.sql
-var embedMigrations embed.FS
-
-func RunMigrations(db *sql.DB) error {
-    goose.SetBaseFS(embedMigrations)
-    if err := goose.SetDialect("sqlite3"); err != nil {
-        return err
-    }
-    return goose.Up(db, "migrations")
-}
-```
-
-## Custom Error Types
-
-```go
-// internal/apperror/apperror.go
-
-type AppError struct {
-    Code    string
-    Message string
-    Cause   error
-}
-
-func (e *AppError) Error() string {
-    if e.Cause != nil {
-        return fmt.Sprintf("%s: %v", e.Message, e.Cause)
-    }
-    return e.Message
-}
-
-func (e *AppError) Unwrap() error {
-    return e.Cause
-}
-
-// Is compares Code for equality — this makes errors.Is work with Wrap'd errors.
-func (e *AppError) Is(target error) bool {
-    t, ok := target.(*AppError)
-    if !ok {
-        return false
-    }
-    return e.Code == t.Code
-}
-
-// Wrap clones a sentinel and attaches a cause.
-func Wrap(sentinel *AppError, cause error) *AppError {
-    return &AppError{
-        Code:    sentinel.Code,
-        Message: sentinel.Message,
-        Cause:   cause,
-    }
-}
-
-// Sentinels
-var (
-    ErrNotFound     = &AppError{Code: "NOT_FOUND", Message: "not found"}
-    ErrDuplicate    = &AppError{Code: "DUPLICATE", Message: "already exists"}
-    ErrInvalidInput = &AppError{Code: "INVALID_INPUT", Message: "invalid input"}
-    ErrDatabase     = &AppError{Code: "DATABASE", Message: "database error"}
-)
-```
-
-## Database Schema
-
-See the goose migration file above. Key points:
-- `url` is UNIQUE — enforces no duplicate endpoints.
-- `consecutive_failures` and `failure_notifications_sent` track notification state per endpoint.
-- `last_failure_at` records when the endpoint first went down (set on first failure, cleared on recovery). Used to calculate downtime duration.
-- Connection string: `file:<path>?_journal_mode=WAL&_busy_timeout=5000`
+- `name` and `url` are both UNIQUE.
+- `failure_notifications_sent` is capped at `MAX_FAILURE_NOTIFICATIONS` by `RecordFailure` — it always reflects notifications actually sent.
+- `last_failure_at` is set on the first failure of an outage and cleared on recovery; `RecordRecovery` returns the endpoint with the pre-reset value so downtime can be computed.
+- Connection string: `file:<path>?_journal_mode=WAL&_busy_timeout=5000`. Migrations embedded via `//go:embed migrations/*.sql` — never inline `CREATE TABLE` in Go.
 
 ## Store Interface
 
-Defined at the point of use (in the packages that need it), not in `internal/storage/`. The canonical shape:
+Defined at the point of use. The scheduler consumes the narrowest set:
 
 ```go
-type Store interface {
-    AddEndpoint(ctx context.Context, url string, intervalSeconds int) (Endpoint, error)       // ErrDuplicate, ErrDatabase
-    GetEndpoint(ctx context.Context, id int64) (Endpoint, error)                               // ErrNotFound, ErrDatabase
-    GetEndpointByURL(ctx context.Context, url string) (Endpoint, error)                        // ErrNotFound, ErrDatabase
-    DeleteEndpoint(ctx context.Context, id int64) error                                        // ErrNotFound, ErrDatabase
-    ListEndpoints(ctx context.Context) ([]Endpoint, error)                                     // ErrDatabase
-    UpdateEndpointStatus(ctx context.Context, id int64, status string, statusCode int) error   // ErrNotFound, ErrDatabase
-    UpdateEndpointInterval(ctx context.Context, id int64, intervalSeconds int) error            // ErrNotFound, ErrDatabase
-    RecordFailure(ctx context.Context, id int64, statusCode int) (Endpoint, error)             // ErrNotFound, ErrDatabase
-    RecordRecovery(ctx context.Context, id int64, statusCode int) (Endpoint, error)            // ErrNotFound, ErrDatabase
+type Store interface { // internal/monitor/scheduler.go
+    GetEndpoint(ctx context.Context, id int64) (storage.Endpoint, error)
+    UpdateEndpointStatus(ctx context.Context, id int64, status string, statusCode int, latencyMs int64) error
+    RecordFailure(ctx context.Context, id int64, statusCode int, latencyMs int64, maxNotifications int) (storage.Endpoint, error)
+    RecordRecovery(ctx context.Context, id int64, statusCode int, latencyMs int64) (storage.Endpoint, error)
 }
 ```
 
-- `RecordFailure` increments `consecutive_failures` and `failure_notifications_sent`, sets `last_failure_at` (on first failure), updates `status` and `last_checked_at`. Returns updated endpoint.
-- `RecordRecovery` resets `consecutive_failures` and `failure_notifications_sent` to 0, clears `last_failure_at`, updates `status` and `last_checked_at`. Returns updated endpoint (with `last_failure_at` from BEFORE the reset, so downtime can be calculated).
+The bot consumes Add/Get/GetByURL/GetByName/Delete/List/UpdateEndpointInterval (`internal/bot/bot.go`). `storage.SQLiteStore` implements both implicitly.
 
-## Telegram Bot Commands
+## Notification Behavior (scheduled checks — `checkAndNotify`)
 
-### /add <url> <interval>
-- Parse URL and interval from message text.
-- Validate: URL must have http/https scheme. Interval must parse as Go duration and be >= 10s.
-- Call `store.AddEndpoint`. On `ErrDuplicate` → friendly message. On `ErrInvalidInput` → show usage.
-- Call `scheduler.Add(endpoint)` to start monitoring immediately.
-- Reply with confirmation including endpoint ID, URL, and interval.
+1. Check: `statusCode, latency, err := checker.Check(ctx, url)`.
+2. **DOWN** (error or non-2xx):
+   - `RecordFailure` → increments `consecutive_failures`, increments `failure_notifications_sent` up to the cap, sets `last_failure_at` on first failure.
+   - Notify only when the counter actually increased (i.e., cap not yet reached).
+3. **UP, previously down** (`status` not `ok`/`unknown`):
+   - `RecordRecovery` → resets counters, returns old `last_failure_at`.
+   - Send recovery notification with downtime **only if `last_failure_at` was set** — a `not_ok` status without it comes from an ad-hoc probe, not a tracked outage.
+4. **UP, already up**: `UpdateEndpointStatus` (status, code, latency, `last_checked_at`).
 
-### /delete <id_or_url>
-- Parse argument. Try as int64 (ID) first, then as URL.
-- Look up endpoint via `store.GetEndpoint` or `store.GetEndpointByURL`.
-- Call `scheduler.Remove(endpoint.ID)` to stop monitoring.
-- Call `store.DeleteEndpoint`.
-- Reply with confirmation.
+## Ad-hoc Checks (`CheckNow`, used by `/status`)
 
-### /status
-- Call `store.ListEndpoints`.
-- For each endpoint, perform an immediate health check via `checker.Check(ctx, url)`.
-- Update status in store.
-- Reply with formatted status of all endpoints.
+Performs a check and updates status/code/latency, but deliberately does NOT touch failure counters and never notifies. Exception: a DOWN→UP transition calls `RecordRecovery` to clear any tracked outage state. The scheduled jobs own the failure/recovery state machine.
 
-### /list
-- Call `store.ListEndpoints`.
-- Reply with formatted list (no new checks triggered).
+`/add` also runs one immediate check (via the bot's `Checker`) purely to include the result in the confirmation reply; the job's `WithStartImmediately` run persists the authoritative state.
 
-### /interval <id_or_url> <new_interval>
-- Parse endpoint identifier and new interval.
-- Validate interval >= 10s.
-- Call `store.UpdateEndpointInterval`.
-- Call `scheduler.Remove` then `scheduler.Add` with updated endpoint.
-- Reply with confirmation.
+## Telegram Commands
 
-### /help
-- Reply with static help text showing all commands and usage examples.
+| Command | Behavior |
+|---------|----------|
+| `/add <name> <url> [interval]` | Validate name (1–50 chars, `[A-Za-z0-9_-]`, not all-numeric, no leading/trailing `-`) and URL (http/https, dotted host). Interval ≥ 10s, default `1m`. `ErrDuplicate` → friendly message. On scheduler failure → warning reply (monitored after restart). Reply includes immediate first-check result. |
+| `/delete <name or id>` | Lookup by ID → name → URL. Remove job, then delete row. |
+| `/interval <name or id> <interval>` | `updateInterval` helper: update DB, then remove+re-add job; on job failure roll back DB and restore the old job. |
+| `/list` | Summary + per-endpoint lines, inline buttons (detail → interval presets / confirmed delete, refresh). |
+| `/status` | Concurrent `CheckNow` for all endpoints; reply with HTTP code + latency per endpoint. |
+| `/help` | Static help text. |
 
-## Notification Behavior
+All user-provided content is HTML-escaped; messages use `ParseMode: HTML`. The `guarded` middleware drops updates from any chat other than `TELEGRAM_CHAT_ID`.
 
-The check-and-notify logic runs inside the gocron job:
+## Error Handling
 
-1. **Check**: Call `checker.Check(ctx, endpoint.URL)` → returns `(statusCode int, err error)`.
-2. **Determine outcome**: `statusCode == 200` → OK. Anything else → NOT_OK.
-3. **On NOT_OK**:
-   - Call `store.RecordFailure(ctx, id, statusCode)` → returns updated endpoint.
-   - If `endpoint.FailureNotificationsSent <= maxFailureNotifications`:
-     - Call `notifier.NotifyFailure(ctx, endpoint)`.
-4. **On OK, if endpoint was previously NOT_OK** (`endpoint.Status != "ok"` before this check):
-   - Call `store.RecordRecovery(ctx, id, statusCode)` → returns endpoint with old `last_failure_at`.
-   - Calculate downtime: `time.Since(endpoint.LastFailureAt)`.
-   - Call `notifier.NotifyRecovery(ctx, endpoint, downtime)`.
-5. **On OK, if endpoint was already OK**: Just update `last_checked_at`.
+`internal/apperror`: `AppError{Code, Message, Cause}` implementing `Error`, `Unwrap`, `Is` (compares `Code`). Sentinels: `ErrNotFound`, `ErrDuplicate`, `ErrInvalidInput`, `ErrDatabase`. `Wrap(sentinel, cause)` clones. Always `errors.Is`/`errors.As` — never string matching (the single exception: `isUniqueViolation` detecting SQLite UNIQUE errors by message, wrapped into `ErrDuplicate` at the storage boundary).
 
-## Notifier Interface
+## Logging
 
-```go
-type Notifier interface {
-    NotifyFailure(ctx context.Context, endpoint Endpoint) error
-    NotifyRecovery(ctx context.Context, endpoint Endpoint, downtime time.Duration) error
-}
-```
-
-`TelegramNotifier` implements this by formatting messages and sending them to the configured chat ID via telebot.
-
-## Message Formats
-
-### Failure
-```
-🔴 ENDPOINT DOWN
-URL: {url}
-Status: NOT_OK (HTTP {status_code})
-Time: {timestamp UTC}
-Consecutive failures: {failure_notifications_sent}/{max_failure_notifications}
-```
-
-### Recovery
-```
-🟢 ENDPOINT RECOVERED
-URL: {url}
-Status: OK (HTTP {status_code})
-Downtime: {human_readable_duration}
-Recovered at: {timestamp UTC}
-```
-
-### List / Status
-```
-📋 Monitored Endpoints
-
-1. {url}
-   Status: {status} | Interval: {interval} | Last check: {time}
-
-2. {url}
-   ...
-```
-If no endpoints: "No endpoints are being monitored."
-
-### Help
-```
-📖 Available Commands
-
-/add <url> <interval> — Add endpoint (e.g., /add https://example.com 30s)
-/delete <id_or_url> — Remove endpoint
-/status — Check all endpoints now
-/list — List all endpoints
-/interval <id_or_url> <interval> — Update check interval
-/help — Show this message
-
-Intervals: 10s, 30s, 1m, 5m, 1h, etc. (minimum 10s)
-```
-
-## Duration Formatting
-
-`FormatDuration(d time.Duration) string` produces human-readable output:
-- Under 1 minute: "45s"
-- Under 1 hour: "12m 34s"
-- 1 hour or more: "2h 15m 30s"
-- Zero seconds components are omitted, but at least one component is always shown.
-
-## Environment Variables
-
-| Variable | Type | Required | Default | Description |
-|----------|------|----------|---------|-------------|
-| `TELEGRAM_TOKEN` | string | Yes | — | Bot token from @BotFather |
-| `TELEGRAM_CHAT_ID` | int64 | Yes | — | Group chat ID for notifications |
-| `DATABASE_PATH` | string | No | `./data/uptime.db` | SQLite database file path |
-| `HTTP_TIMEOUT` | duration | No | `10s` | Health check HTTP timeout |
-| `MAX_FAILURE_NOTIFICATIONS` | int | No | `3` | Stop notifying after N consecutive failures |
-| `LOG_LEVEL` | string | No | `info` | Log level: debug, info, warn, error |
-| `HEALTH_PORT` | int | No | `8080` | Port for /healthz HTTP endpoint |
+`slog` text handler to stderr, level from `LOG_LEVEL`. Conventions: short lowercase action phrases (`"scheduler: record failure"`), entity context via `"id"`/`"name"`/`"url"`, errors under `"error"`. State transitions log at Info with `status_code`, `duration_ms`, and `downtime`.
 
 ## Health Endpoint
 
-A minimal `net/http` server on `HEALTH_PORT`:
-- `GET /healthz` → `200 OK` with body `{"status":"ok"}`
-- Used by Docker HEALTHCHECK and Coolify.
-- Runs in its own goroutine; shut down via `server.Shutdown(ctx)` during graceful shutdown.
+`GET /healthz` on `HEALTH_PORT` → `200 {"status":"ok"}`. Server has `ReadHeaderTimeout: 5s`. Docker `HEALTHCHECK` curls `http://localhost:${HEALTH_PORT:-8080}/healthz`.
 
-## Docker
+## Docker & Release
 
-### Dockerfile
-- **Builder**: `golang:1.26.1-alpine`, `CGO_ENABLED=0`, `-ldflags="-s -w"`.
-- **Runtime**: `alpine:latest`, `ca-certificates`, `tzdata`, non-root user, `/app/data` volume.
-- `HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -f http://localhost:8080/healthz || exit 1`
-- Install `curl` in runtime stage for HEALTHCHECK.
-
-### docker-compose.yml
-```yaml
-services:
-  uptime-monitor:
-    build: .
-    restart: unless-stopped
-    environment:
-      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
-      - DATABASE_PATH=/app/data/uptime.db
-      - MAX_FAILURE_NOTIFICATIONS=3
-    volumes:
-      - uptime-data:/app/data
-
-volumes:
-  uptime-data:
-```
+- Dockerfile: `golang:1.26.1-alpine` builder (`CGO_ENABLED=0`, `-ldflags="-s -w"`), `alpine:3.21` runtime with `ca-certificates`, `tzdata`, `curl`, `su-exec`, non-root `appuser`, `/app/data` volume.
+- `entrypoint.sh`: chowns `/app/data` and drops to `appuser` via `su-exec` when running as root; runs the binary directly otherwise (supports `docker run --user`).
+- Release workflow: pushing a `v*` tag builds `linux/amd64` + `linux/arm64` images and pushes them to `ghcr.io/mediacom99/noroshi` with semver and `latest` tags.
 
 ## Edge Cases
 
-- **Duplicate URL on /add**: Return `ErrDuplicate` from store → handler replies with friendly message.
-- **Invalid URL**: Validate scheme (http/https) before calling store. Return `ErrInvalidInput`.
-- **Interval < 10s**: Reject with `ErrInvalidInput`.
-- **Endpoint not found on /delete**: `ErrNotFound` → friendly message.
-- **Container restart**: On startup, load all endpoints from DB and call `scheduler.Add` for each. gocron picks up where it left off.
-- **Context cancellation mid-check**: retryablehttp respects context — cancelled checks return immediately.
-- **DB errors**: Wrap with `ErrDatabase` sentinel. Log with slog. Reply with generic "internal error" to user.
+- **Duplicate name or URL on /add** → `ErrDuplicate` → friendly message.
+- **All-numeric names rejected** — they'd be ambiguous with IDs in command arguments.
+- **Interval < 10s rejected** (handlers, not the scheduler).
+- **Container restart** → all endpoints reloaded from DB and re-scheduled; failure state persists.
+- **Context cancellation mid-check** → retryablehttp respects context, checks abort.
+- **Scheduler re-add failure on interval change** → DB rolled back, old job restored.
+- **Scheduler add failure on /add** → endpoint persisted, user warned, monitored after restart.
