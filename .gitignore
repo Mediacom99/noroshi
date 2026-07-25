@@ -2,3 +2,4 @@
 /monitor
 data/
 .env
+.claude/
