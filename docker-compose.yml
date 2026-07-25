@@ -1,12 +1,19 @@
 services:
   uptime-monitor:
     build: .
+    # Or use the published image instead of building locally:
+    # image: ghcr.io/mediacom99/noroshi:latest
     restart: unless-stopped
     environment:
       - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
       - DATABASE_PATH=/app/data/uptime.db
-      - MAX_FAILURE_NOTIFICATIONS=3
+      - HTTP_TIMEOUT=${HTTP_TIMEOUT:-10s}
+      - MAX_FAILURE_NOTIFICATIONS=${MAX_FAILURE_NOTIFICATIONS:-3}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - HEALTH_PORT=${HEALTH_PORT:-8080}
+    ports:
+      - "${HEALTH_PORT:-8080}:${HEALTH_PORT:-8080}"
     volumes:
       - uptime-data:/app/data
 

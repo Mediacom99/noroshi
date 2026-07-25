@@ -26,6 +26,6 @@ VOLUME ["/app/data"]
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:8080/healthz || exit 1
+    CMD curl -f "http://localhost:${HEALTH_PORT:-8080}/healthz" || exit 1
 
 ENTRYPOINT ["./entrypoint.sh"]
