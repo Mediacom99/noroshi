@@ -573,3 +573,75 @@ func TestHandleHelp(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleStatus(t *testing.T) {
+	tests := []struct {
+		name         string
+		store        *mockStore
+		scheduler    *mockScheduler
+		wantContains []string
+	}{
+		{
+			name:         "empty list",
+			store:        &mockStore{},
+			scheduler:    &mockScheduler{},
+			wantContains: []string{"No endpoints"},
+		},
+		{
+			name: "checks all endpoints",
+			store: &mockStore{
+				listEndpointsFn: func(_ context.Context) ([]storage.Endpoint, error) {
+					return []storage.Endpoint{
+						{ID: 1, Name: "site-a", URL: "https://a.com", IntervalSeconds: 30, Status: "unknown"},
+						{ID: 2, Name: "site-b", URL: "https://b.com", IntervalSeconds: 60, Status: "unknown"},
+					}, nil
+				},
+			},
+			scheduler: &mockScheduler{
+				checkNowFn: func(_ context.Context, id int64) (storage.Endpoint, error) {
+					if id == 1 {
+						return storage.Endpoint{ID: 1, Name: "site-a", Status: "ok", LastStatusCode: 200, LastLatencyMs: 42}, nil
+					}
+					return storage.Endpoint{ID: 2, Name: "site-b", Status: "not_ok", LastStatusCode: 503, LastLatencyMs: 120}, nil
+				},
+			},
+			wantContains: []string{"1/2 healthy", "site-a", "HTTP 200", "site-b", "HTTP 503"},
+		},
+		{
+			name: "store error",
+			store: &mockStore{
+				listEndpointsFn: func(_ context.Context) ([]storage.Endpoint, error) {
+					return nil, fmt.Errorf("db error")
+				},
+			},
+			scheduler:    &mockScheduler{},
+			wantContains: []string{"Internal error"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := newTestBot(tt.store, tt.scheduler)
+
+			mc := &mockContext{
+				chatFn: func() *tele.Chat {
+					return &tele.Chat{ID: 123}
+				},
+			}
+
+			err := b.handleStatus(mc)
+			if err != nil {
+				t.Fatalf("handler returned error: %v", err)
+			}
+
+			if len(mc.sentMessages) == 0 {
+				t.Fatal("expected a sent message, got none")
+			}
+			for _, want := range tt.wantContains {
+				if !strings.Contains(mc.sentMessages[0], want) {
+					t.Errorf("message should contain %q, got: %s", want, mc.sentMessages[0])
+				}
+			}
+		})
+	}
+}

@@ -200,7 +200,7 @@ func TestRecordFailure(t *testing.T) {
 	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 
 	// First failure
-	updated, err := store.RecordFailure(ctx, ep.ID, 503)
+	updated, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3)
 	if err != nil {
 		t.Fatalf("RecordFailure: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestRecordFailure(t *testing.T) {
 	}
 
 	// Second failure
-	updated2, err := store.RecordFailure(ctx, ep.ID, 503)
+	updated2, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3)
 	if err != nil {
 		t.Fatalf("RecordFailure 2: %v", err)
 	}
@@ -234,16 +234,46 @@ func TestRecordFailure(t *testing.T) {
 	}
 }
 
+func TestRecordFailureNotificationCap(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+
+	maxNotifications := 3
+	for range maxNotifications + 2 {
+		if _, err := store.RecordFailure(ctx, ep.ID, 503, 12, maxNotifications); err != nil {
+			t.Fatalf("RecordFailure: %v", err)
+		}
+	}
+
+	updated, err := store.GetEndpoint(ctx, ep.ID)
+	if err != nil {
+		t.Fatalf("GetEndpoint: %v", err)
+	}
+	if updated.FailureNotificationsSent != maxNotifications {
+		t.Errorf("FailureNotificationsSent = %d, want capped at %d", updated.FailureNotificationsSent, maxNotifications)
+	}
+	if updated.ConsecutiveFailures != maxNotifications+2 {
+		t.Errorf("ConsecutiveFailures = %d, want %d (uncapped)", updated.ConsecutiveFailures, maxNotifications+2)
+	}
+}
+
 func TestRecordRecovery(t *testing.T) {
 	db := testDB(t)
 	store := NewSQLiteStore(db)
 	ctx := context.Background()
 
 	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
-	store.RecordFailure(ctx, ep.ID, 503)
-	store.RecordFailure(ctx, ep.ID, 503)
+	if _, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3); err != nil {
+		t.Fatalf("RecordFailure: %v", err)
+	}
+	if _, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3); err != nil {
+		t.Fatalf("RecordFailure: %v", err)
+	}
 
-	recovered, err := store.RecordRecovery(ctx, ep.ID, 200)
+	recovered, err := store.RecordRecovery(ctx, ep.ID, 200, 12)
 	if err != nil {
 		t.Fatalf("RecordRecovery: %v", err)
 	}
@@ -359,7 +389,7 @@ func TestUpdateEndpointStatus(t *testing.T) {
 
 	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 
-	if err := store.UpdateEndpointStatus(ctx, ep.ID, "ok", 200); err != nil {
+	if err := store.UpdateEndpointStatus(ctx, ep.ID, "ok", 200, 12); err != nil {
 		t.Fatalf("UpdateEndpointStatus: %v", err)
 	}
 

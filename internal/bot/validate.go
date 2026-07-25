@@ -11,10 +11,18 @@ func ValidateName(name string) error {
 	if len(name) == 0 || len(name) > 50 {
 		return fmt.Errorf("Name must be 1-50 characters: letters, numbers, hyphens, underscores")
 	}
+	allDigits := true
 	for _, r := range name {
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
 			return fmt.Errorf("Name must be 1-50 characters: letters, numbers, hyphens, underscores")
 		}
+		if r < '0' || r > '9' {
+			allDigits = false
+		}
+	}
+	// All-numeric names would be ambiguous with endpoint IDs in command arguments.
+	if allDigits {
+		return fmt.Errorf("Name must not be all numbers (it would clash with endpoint IDs)")
 	}
 	if name[0] == '-' || name[len(name)-1] == '-' {
 		return fmt.Errorf("Name must not start or end with a hyphen")

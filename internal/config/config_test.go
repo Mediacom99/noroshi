@@ -14,13 +14,13 @@ func setEnv(t *testing.T, vars map[string]string) {
 
 func TestLoadValidConfig(t *testing.T) {
 	setEnv(t, map[string]string{
-		"TELEGRAM_TOKEN":           "test-token",
-		"TELEGRAM_CHAT_ID":        "-100123456789",
-		"DATABASE_PATH":            "/tmp/test.db",
-		"HTTP_TIMEOUT":             "5s",
+		"TELEGRAM_TOKEN":            "test-token",
+		"TELEGRAM_CHAT_ID":          "-100123456789",
+		"DATABASE_PATH":             "/tmp/test.db",
+		"HTTP_TIMEOUT":              "5s",
 		"MAX_FAILURE_NOTIFICATIONS": "5",
-		"LOG_LEVEL":                "debug",
-		"HEALTH_PORT":              "9090",
+		"LOG_LEVEL":                 "debug",
+		"HEALTH_PORT":               "9090",
 	})
 
 	cfg, err := Load()
@@ -53,7 +53,7 @@ func TestLoadValidConfig(t *testing.T) {
 
 func TestLoadDefaults(t *testing.T) {
 	setEnv(t, map[string]string{
-		"TELEGRAM_TOKEN":  "test-token",
+		"TELEGRAM_TOKEN":   "test-token",
 		"TELEGRAM_CHAT_ID": "-100123",
 	})
 
@@ -103,7 +103,7 @@ func TestLoadMissingChatID(t *testing.T) {
 
 func TestLoadInvalidChatID(t *testing.T) {
 	setEnv(t, map[string]string{
-		"TELEGRAM_TOKEN":  "test-token",
+		"TELEGRAM_TOKEN":   "test-token",
 		"TELEGRAM_CHAT_ID": "not-a-number",
 	})
 
@@ -115,7 +115,7 @@ func TestLoadInvalidChatID(t *testing.T) {
 
 func TestLoadInvalidHTTPTimeout(t *testing.T) {
 	setEnv(t, map[string]string{
-		"TELEGRAM_TOKEN":  "test-token",
+		"TELEGRAM_TOKEN":   "test-token",
 		"TELEGRAM_CHAT_ID": "-100123",
 		"HTTP_TIMEOUT":     "bad",
 	})

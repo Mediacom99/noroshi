@@ -4,8 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-"strconv"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"noroshi/internal/apperror"
@@ -18,6 +19,7 @@ func (b *Bot) registerHandlers() {
 	b.bot.Handle("/add", b.guarded(b.handleAdd))
 	b.bot.Handle("/delete", b.guarded(b.handleDelete))
 	b.bot.Handle("/list", b.guarded(b.handleList))
+	b.bot.Handle("/status", b.guarded(b.handleStatus))
 	b.bot.Handle("/interval", b.guarded(b.handleInterval))
 	b.bot.Handle("/help", b.guarded(b.handleHelp))
 
@@ -62,12 +64,29 @@ func (b *Bot) handleAdd(c tele.Context) error {
 
 	if b.scheduler != nil {
 		if err := b.scheduler.Add(b.rootCtx, ep); err != nil {
-			slog.Error("add to scheduler", "error", err)
+			slog.Error("add to scheduler", "id", ep.ID, "error", err)
+			return c.Send(fmt.Sprintf("⚠️ <b>Added endpoint #%d</b>, but scheduling failed — monitoring will start after the next restart.\n\n<b>Name:</b> %s\n<b>URL:</b> <code>%s</code>\n<b>Interval:</b> %s",
+				ep.ID, htmlEscape(ep.Name), htmlEscape(ep.URL), FormatDuration(interval)), tele.NoPreview)
 		}
 	}
 
-	return c.Send(fmt.Sprintf("✅ <b>Added endpoint #%d</b>\n\n<b>Name:</b> %s\n<b>URL:</b> <code>%s</code>\n<b>Interval:</b> %s",
-		ep.ID, htmlEscape(ep.Name), htmlEscape(ep.URL), FormatDuration(interval)), tele.NoPreview)
+	// Run one immediate check so the user gets instant feedback. The scheduled
+	// job (started immediately by the scheduler) persists the authoritative state.
+	var firstCheck string
+	if b.checker != nil {
+		code, latency, checkErr := b.checker.Check(b.rootCtx, ep.URL)
+		switch {
+		case checkErr != nil:
+			firstCheck = "\n<b>First check:</b> 🔴 connection error"
+		case code >= 200 && code < 300:
+			firstCheck = fmt.Sprintf("\n<b>First check:</b> 🟢 HTTP %d · %dms", code, latency.Milliseconds())
+		default:
+			firstCheck = fmt.Sprintf("\n<b>First check:</b> 🔴 HTTP %d · %dms", code, latency.Milliseconds())
+		}
+	}
+
+	return c.Send(fmt.Sprintf("✅ <b>Added endpoint #%d</b>\n\n<b>Name:</b> %s\n<b>URL:</b> <code>%s</code>\n<b>Interval:</b> %s%s",
+		ep.ID, htmlEscape(ep.Name), htmlEscape(ep.URL), FormatDuration(interval), firstCheck), tele.NoPreview)
 }
 
 func (b *Bot) handleDelete(c tele.Context) error {
@@ -99,6 +118,39 @@ func (b *Bot) handleDelete(c tele.Context) error {
 
 func (b *Bot) handleList(c tele.Context) error {
 	return b.sendEndpointList(c)
+}
+
+// handleStatus runs an immediate check on every endpoint (concurrently) and
+// replies with fresh results. Ad-hoc checks don't affect the notification
+// state machine (see Scheduler.CheckNow).
+func (b *Bot) handleStatus(c tele.Context) error {
+	endpoints, err := b.store.ListEndpoints(b.rootCtx)
+	if err != nil {
+		slog.Error("list endpoints", "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+	if len(endpoints) == 0 {
+		return c.Send("No endpoints are being monitored.\nUse /add to start monitoring.")
+	}
+
+	if b.scheduler != nil {
+		var wg sync.WaitGroup
+		for i, ep := range endpoints {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				updated, err := b.scheduler.CheckNow(b.rootCtx, ep.ID)
+				if err != nil {
+					slog.Error("status check", "id", ep.ID, "error", err)
+					return
+				}
+				endpoints[i] = updated
+			}()
+		}
+		wg.Wait()
+	}
+
+	return c.Send(FormatStatus(endpoints), tele.NoPreview)
 }
 
 func (b *Bot) sendEndpointList(c tele.Context) error {
@@ -138,20 +190,41 @@ func (b *Bot) handleInterval(c tele.Context) error {
 		return c.Send("Interval must be at least 10s")
 	}
 
-	if err := b.store.UpdateEndpointInterval(b.rootCtx, ep.ID, int(interval.Seconds())); err != nil {
-		slog.Error("update interval", "error", err)
+	if err := b.updateInterval(ep, int(interval.Seconds())); err != nil {
+		slog.Error("update interval", "id", ep.ID, "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 
-	if b.scheduler != nil {
-		b.scheduler.Remove(ep.ID)
-		ep.IntervalSeconds = int(interval.Seconds())
-			if err := b.scheduler.Add(b.rootCtx, ep); err != nil {
-			slog.Error("re-add to scheduler", "error", err)
-		}
+	return c.Send(fmt.Sprintf("✅ <b>Updated interval</b> for %s to %s", htmlEscape(ep.Name), FormatDuration(interval)))
+}
+
+// updateInterval updates the endpoint interval in the store and reschedules the
+// job. If rescheduling fails, the store update is rolled back and the previous
+// job is restored, so the endpoint never ends up unmonitored by accident.
+func (b *Bot) updateInterval(ep storage.Endpoint, seconds int) error {
+	oldSeconds := ep.IntervalSeconds
+
+	if err := b.store.UpdateEndpointInterval(b.rootCtx, ep.ID, seconds); err != nil {
+		return err
 	}
 
-	return c.Send(fmt.Sprintf("✅ <b>Updated interval</b> for %s to %s", htmlEscape(ep.Name), FormatDuration(interval)))
+	if b.scheduler == nil {
+		return nil
+	}
+
+	b.scheduler.Remove(ep.ID)
+	ep.IntervalSeconds = seconds
+	if err := b.scheduler.Add(b.rootCtx, ep); err != nil {
+		ep.IntervalSeconds = oldSeconds
+		if rbErr := b.store.UpdateEndpointInterval(b.rootCtx, ep.ID, oldSeconds); rbErr != nil {
+			slog.Error("rollback interval", "id", ep.ID, "error", rbErr)
+		}
+		if rbErr := b.scheduler.Add(b.rootCtx, ep); rbErr != nil {
+			slog.Error("restore job", "id", ep.ID, "error", rbErr)
+		}
+		return err
+	}
+	return nil
 }
 
 func (b *Bot) handleHelp(c tele.Context) error {
@@ -169,4 +242,3 @@ func (b *Bot) findEndpoint(arg string) (storage.Endpoint, error) {
 	}
 	return b.store.GetEndpointByURL(b.rootCtx, arg)
 }
-

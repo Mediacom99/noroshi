@@ -14,14 +14,14 @@ import (
 // Store defines the storage methods the scheduler needs.
 type Store interface {
 	GetEndpoint(ctx context.Context, id int64) (storage.Endpoint, error)
-	UpdateEndpointStatus(ctx context.Context, id int64, status string, statusCode int) error
-	RecordFailure(ctx context.Context, id int64, statusCode int) (storage.Endpoint, error)
-	RecordRecovery(ctx context.Context, id int64, statusCode int) (storage.Endpoint, error)
+	UpdateEndpointStatus(ctx context.Context, id int64, status string, statusCode int, latencyMs int64) error
+	RecordFailure(ctx context.Context, id int64, statusCode int, latencyMs int64, maxNotifications int) (storage.Endpoint, error)
+	RecordRecovery(ctx context.Context, id int64, statusCode int, latencyMs int64) (storage.Endpoint, error)
 }
 
 // Checker performs HTTP health checks.
 type Checker interface {
-	Check(ctx context.Context, url string) (int, error)
+	Check(ctx context.Context, url string) (statusCode int, latency time.Duration, err error)
 }
 
 // Notifier sends failure and recovery notifications.
@@ -69,6 +69,9 @@ func (s *Scheduler) Add(ctx context.Context, ep storage.Endpoint) error {
 		gocron.NewTask(s.checkAndNotify, ep.ID),
 		gocron.WithTags(tag),
 		gocron.WithStartAt(gocron.WithStartImmediately()),
+		// Never run two checks for the same endpoint concurrently — a check
+		// slower than the interval would otherwise race on failure counters.
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
 	)
 	if err != nil {
 		return fmt.Errorf("add job for endpoint %d: %w", ep.ID, err)
@@ -97,46 +100,87 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 		return
 	}
 
-	previousStatus := ep.Status
+	statusCode, latency, checkErr := s.checker.Check(ctx, ep.URL)
+	latencyMs := latency.Milliseconds()
 
-	statusCode, checkErr := s.checker.Check(ctx, ep.URL)
-
-	if checkErr != nil || statusCode != 200 {
+	if checkErr != nil || statusCode < 200 || statusCode >= 300 {
 		// NOT_OK
-		updated, err := s.store.RecordFailure(ctx, endpointID, statusCode)
+		updated, err := s.store.RecordFailure(ctx, endpointID, statusCode, latencyMs, s.maxFailureNotifications)
 		if err != nil {
 			slog.Error("scheduler: record failure", "id", endpointID, "error", err)
 			return
 		}
 
-		if updated.FailureNotificationsSent <= s.maxFailureNotifications {
+		slog.Info("scheduler: endpoint down",
+			"id", endpointID, "name", ep.Name, "url", ep.URL,
+			"status_code", statusCode, "duration_ms", latencyMs,
+			"consecutive_failures", updated.ConsecutiveFailures)
+
+		// The store caps failure_notifications_sent at maxFailureNotifications,
+		// so notify only when this failure actually incremented the counter.
+		if updated.FailureNotificationsSent > ep.FailureNotificationsSent {
 			if err := s.notifier.NotifyFailure(ctx, updated); err != nil {
 				slog.Error("scheduler: notify failure", "id", endpointID, "error", err)
 			}
 		}
 	} else {
 		// OK
-		if previousStatus != "ok" && previousStatus != "unknown" {
+		if ep.Status != "ok" && ep.Status != "unknown" {
 			// Recovery
-			recovered, err := s.store.RecordRecovery(ctx, endpointID, statusCode)
+			recovered, err := s.store.RecordRecovery(ctx, endpointID, statusCode, latencyMs)
 			if err != nil {
 				slog.Error("scheduler: record recovery", "id", endpointID, "error", err)
 				return
 			}
 
-			var downtime time.Duration
+			// Only notify for a real tracked outage — a "not_ok" status without
+			// last_failure_at comes from an ad-hoc /status probe, not an outage.
 			if recovered.LastFailureAt.Valid {
-				downtime = time.Since(recovered.LastFailureAt.Time)
-			}
-
-			if err := s.notifier.NotifyRecovery(ctx, recovered, downtime); err != nil {
-				slog.Error("scheduler: notify recovery", "id", endpointID, "error", err)
+				downtime := time.Since(recovered.LastFailureAt.Time)
+				slog.Info("scheduler: endpoint recovered",
+					"id", endpointID, "name", ep.Name, "url", ep.URL,
+					"status_code", statusCode, "duration_ms", latencyMs,
+					"downtime", downtime.String())
+				if err := s.notifier.NotifyRecovery(ctx, recovered, downtime); err != nil {
+					slog.Error("scheduler: notify recovery", "id", endpointID, "error", err)
+				}
 			}
 		} else {
 			// Already OK, just update status
-			if err := s.store.UpdateEndpointStatus(ctx, endpointID, "ok", statusCode); err != nil {
+			if err := s.store.UpdateEndpointStatus(ctx, endpointID, "ok", statusCode, latencyMs); err != nil {
 				slog.Error("scheduler: update status", "id", endpointID, "error", err)
 			}
 		}
 	}
+}
+
+// CheckNow performs an immediate ad-hoc check for an endpoint and updates its
+// stored status, code, and latency. It deliberately does NOT touch failure
+// counters or send notifications — the scheduled jobs own the
+// failure/recovery state machine.
+func (s *Scheduler) CheckNow(ctx context.Context, endpointID int64) (storage.Endpoint, error) {
+	ep, err := s.store.GetEndpoint(ctx, endpointID)
+	if err != nil {
+		return storage.Endpoint{}, err
+	}
+
+	statusCode, latency, checkErr := s.checker.Check(ctx, ep.URL)
+	latencyMs := latency.Milliseconds()
+
+	if checkErr != nil || statusCode < 200 || statusCode >= 300 {
+		if err := s.store.UpdateEndpointStatus(ctx, endpointID, "not_ok", statusCode, latencyMs); err != nil {
+			return storage.Endpoint{}, err
+		}
+	} else if ep.Status != "ok" {
+		// Transitioning to OK from a tracked outage: reset failure state.
+		if _, err := s.store.RecordRecovery(ctx, endpointID, statusCode, latencyMs); err != nil {
+			return storage.Endpoint{}, err
+		}
+	} else {
+		if err := s.store.UpdateEndpointStatus(ctx, endpointID, "ok", statusCode, latencyMs); err != nil {
+			return storage.Endpoint{}, err
+		}
+	}
+
+	return s.store.GetEndpoint(ctx, endpointID)
 }

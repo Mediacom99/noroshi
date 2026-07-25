@@ -153,17 +153,9 @@ func (b *Bot) handleSetIntervalCallback(c tele.Context) error {
 		return c.Respond(&tele.CallbackResponse{Text: "Endpoint not found."})
 	}
 
-	if err := b.store.UpdateEndpointInterval(b.rootCtx, ep.ID, seconds); err != nil {
-		slog.Error("update interval", "error", err)
+	if err := b.updateInterval(ep, seconds); err != nil {
+		slog.Error("update interval", "id", ep.ID, "error", err)
 		return c.Respond(&tele.CallbackResponse{Text: "Error updating interval."})
-	}
-
-	if b.scheduler != nil {
-		b.scheduler.Remove(ep.ID)
-		ep.IntervalSeconds = seconds
-		if err := b.scheduler.Add(b.rootCtx, ep); err != nil {
-			slog.Error("re-add to scheduler", "error", err)
-		}
 	}
 
 	interval := FormatDuration(time.Duration(seconds) * time.Second)

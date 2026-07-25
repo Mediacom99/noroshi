@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
@@ -25,19 +26,26 @@ func NewHTTPChecker(timeout time.Duration) *HTTPChecker {
 	return &HTTPChecker{client: client}
 }
 
-// Check performs a GET request and returns the HTTP status code.
-// On connection error, returns 0 and the error.
-func (c *HTTPChecker) Check(ctx context.Context, url string) (int, error) {
+// Check performs a GET request and returns the HTTP status code and how long
+// the request took (including retries). On connection error, returns 0, the
+// elapsed time, and the error.
+func (c *HTTPChecker) Check(ctx context.Context, url string) (int, time.Duration, error) {
 	req, err := retryablehttp.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
+	start := time.Now()
 	resp, err := c.client.Do(req)
+	latency := time.Since(start)
 	if err != nil {
-		return 0, err
+		return 0, latency, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Drain the body so the connection can be reused (keep-alive).
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
-	return resp.StatusCode, nil
+	return resp.StatusCode, latency, nil
 }

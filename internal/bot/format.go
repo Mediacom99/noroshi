@@ -132,20 +132,46 @@ func FormatEndpointList(endpoints []storage.Endpoint) (string, *tele.ReplyMarkup
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "📊 <b>%d/%d endpoints healthy</b>", healthy, len(endpoints))
+	fmt.Fprintf(&b, "📊 <b>%d/%d endpoints healthy</b>\n", healthy, len(endpoints))
 
 	menu := &tele.ReplyMarkup{}
 	var rows []tele.Row
 	for _, ep := range endpoints {
 		id := strconv.FormatInt(ep.ID, 10)
 		emoji := statusEmoji(ep.Status)
-		label := fmt.Sprintf("%s %s", emoji, ep.Name)
-		rows = append(rows, menu.Row(menu.Data(label, cbDetail, id)))
+		fmt.Fprintf(&b, "\n%s <b>%s</b> — <code>%s</code>", emoji, htmlEscape(ep.Name), htmlEscape(ep.URL))
+		rows = append(rows, menu.Row(menu.Data(fmt.Sprintf("%s %s", emoji, ep.Name), cbDetail, id)))
 	}
 	rows = append(rows, menu.Row(menu.Data("🔄 Refresh", cbRefresh)))
 	menu.Inline(rows...)
 
 	return b.String(), menu
+}
+
+// FormatStatus formats the result of an on-demand /status check.
+func FormatStatus(endpoints []storage.Endpoint) string {
+	healthy := 0
+	for _, ep := range endpoints {
+		if ep.Status == "ok" {
+			healthy++
+		}
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "📊 <b>Status check — %d/%d healthy</b>\n", healthy, len(endpoints))
+	for _, ep := range endpoints {
+		emoji := statusEmoji(ep.Status)
+		fmt.Fprintf(&b, "\n%s <b>%s</b>", emoji, htmlEscape(ep.Name))
+		switch {
+		case ep.LastStatusCode > 0:
+			fmt.Fprintf(&b, " — HTTP %d · %dms", ep.LastStatusCode, ep.LastLatencyMs)
+		case ep.Status == "not_ok":
+			b.WriteString(" — connection error")
+		default:
+			b.WriteString(" — not checked yet")
+		}
+	}
+	return b.String()
 }
 
 // FormatEndpointDetail formats a single endpoint's detail view with action buttons.
@@ -168,6 +194,7 @@ func FormatEndpointDetail(ep storage.Endpoint) (string, *tele.ReplyMarkup) {
 	}
 
 	if ep.LastCheckedAt.Valid {
+		fmt.Fprintf(&b, "\n<b>Latency:</b> %dms", ep.LastLatencyMs)
 		fmt.Fprintf(&b, "\n<b>Last check:</b> %s", ep.LastCheckedAt.Time.UTC().Format("15:04:05 UTC"))
 	} else {
 		b.WriteString("\n<b>Last check:</b> never")
@@ -192,6 +219,7 @@ func FormatEndpointDetail(ep storage.Endpoint) (string, *tele.ReplyMarkup) {
 func FormatHelp() string {
 	return "📖 <b>Noroshi — Uptime Monitor</b>\n\n" +
 		"/list — View all endpoints\n" +
+		"/status — Check all endpoints now\n" +
 		"/add <code>&lt;name&gt; &lt;url&gt; [interval]</code> — Add endpoint (default: 1m)\n" +
 		"/delete <code>&lt;name or id&gt;</code> — Remove endpoint\n" +
 		"/interval <code>&lt;name or id&gt; &lt;duration&gt;</code> — Change interval\n" +

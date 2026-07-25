@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"noroshi/internal/bot"
 	"noroshi/internal/config"
@@ -48,7 +49,7 @@ func main() {
 	checker := monitor.NewHTTPChecker(cfg.HTTPTimeout)
 
 	// Create bot (without scheduler — circular dependency resolution)
-	teleBot, err := bot.NewBot(cfg.TelegramToken, cfg.TelegramChatID, store, ctx)
+	teleBot, err := bot.NewBot(cfg.TelegramToken, cfg.TelegramChatID, store, checker, ctx)
 	if err != nil {
 		slog.Error("create bot", "error", err)
 		os.Exit(1)
@@ -116,8 +117,9 @@ func startHealthServer(port int) *http.Server {
 	})
 
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	go func() {

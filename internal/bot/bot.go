@@ -26,6 +26,12 @@ type Store interface {
 type Scheduler interface {
 	Add(ctx context.Context, ep storage.Endpoint) error
 	Remove(endpointID int64) error
+	CheckNow(ctx context.Context, endpointID int64) (storage.Endpoint, error)
+}
+
+// Checker performs an immediate HTTP health check (used by /add feedback).
+type Checker interface {
+	Check(ctx context.Context, url string) (statusCode int, latency time.Duration, err error)
 }
 
 // Bot wraps the Telegram bot with application logic.
@@ -33,12 +39,13 @@ type Bot struct {
 	bot       *tele.Bot
 	store     Store
 	scheduler Scheduler
+	checker   Checker
 	chatID    int64
 	rootCtx   context.Context
 }
 
 // NewBot creates a Bot. SetScheduler must be called before Start.
-func NewBot(token string, chatID int64, store Store, rootCtx context.Context) (*Bot, error) {
+func NewBot(token string, chatID int64, store Store, checker Checker, rootCtx context.Context) (*Bot, error) {
 	pref := tele.Settings{
 		Token:     token,
 		Poller:    &tele.LongPoller{Timeout: 10 * time.Second},
@@ -53,6 +60,7 @@ func NewBot(token string, chatID int64, store Store, rootCtx context.Context) (*
 	b := &Bot{
 		bot:     tb,
 		store:   store,
+		checker: checker,
 		chatID:  chatID,
 		rootCtx: rootCtx,
 	}
@@ -85,6 +93,7 @@ func (b *Bot) registerCommands() {
 		{Text: "add", Description: "Add endpoint: /add <name> <url> [interval]"},
 		{Text: "delete", Description: "Remove an endpoint"},
 		{Text: "interval", Description: "Change check interval"},
+		{Text: "status", Description: "Check all endpoints now"},
 		{Text: "help", Description: "Show help and usage info"},
 	})
 	if err != nil {

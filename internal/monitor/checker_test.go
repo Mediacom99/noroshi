@@ -15,12 +15,15 @@ func TestCheckerOK(t *testing.T) {
 	defer srv.Close()
 
 	checker := NewHTTPChecker(5 * time.Second)
-	code, err := checker.Check(context.Background(), srv.URL)
+	code, latency, err := checker.Check(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
 	if code != 200 {
 		t.Errorf("code = %d, want 200", code)
+	}
+	if latency <= 0 {
+		t.Errorf("latency = %v, want > 0", latency)
 	}
 }
 
@@ -32,7 +35,7 @@ func TestChecker503(t *testing.T) {
 
 	checker := NewHTTPChecker(5 * time.Second)
 	// With PassthroughErrorHandler, retryablehttp returns the last response
-	code, err := checker.Check(context.Background(), srv.URL)
+	code, _, err := checker.Check(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -44,7 +47,7 @@ func TestChecker503(t *testing.T) {
 func TestCheckerUnreachable(t *testing.T) {
 	checker := NewHTTPChecker(1 * time.Second)
 	// Use a port that is not listening
-	code, err := checker.Check(context.Background(), "http://127.0.0.1:1")
+	code, _, err := checker.Check(context.Background(), "http://127.0.0.1:1")
 	if err == nil {
 		t.Fatal("expected error for unreachable server")
 	}
@@ -64,7 +67,7 @@ func TestCheckerCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := checker.Check(ctx, srv.URL)
+	_, _, err := checker.Check(ctx, srv.URL)
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}

@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"time"
 
 	"noroshi/internal/storage"
 
@@ -14,9 +15,22 @@ func newTestBot(store Store, scheduler Scheduler) *Bot {
 	return &Bot{
 		store:     store,
 		scheduler: scheduler,
+		checker:   &mockChecker{},
 		chatID:    123,
 		rootCtx:   context.Background(),
 	}
+}
+
+// mockChecker implements bot.Checker with function-field delegation.
+type mockChecker struct {
+	checkFn func(ctx context.Context, url string) (int, time.Duration, error)
+}
+
+func (m *mockChecker) Check(ctx context.Context, url string) (int, time.Duration, error) {
+	if m.checkFn != nil {
+		return m.checkFn(ctx, url)
+	}
+	return 200, 10 * time.Millisecond, nil
 }
 
 // mockContext implements tele.Context for handler testing.
@@ -144,6 +158,7 @@ func (m *mockStore) UpdateEndpointInterval(ctx context.Context, id int64, interv
 type mockScheduler struct {
 	addFn       func(ctx context.Context, ep storage.Endpoint) error
 	removeFn    func(endpointID int64) error
+	checkNowFn  func(ctx context.Context, endpointID int64) (storage.Endpoint, error)
 	addCalls    int
 	removeCalls int
 }
@@ -162,4 +177,11 @@ func (m *mockScheduler) Remove(endpointID int64) error {
 		return m.removeFn(endpointID)
 	}
 	return nil
+}
+
+func (m *mockScheduler) CheckNow(ctx context.Context, endpointID int64) (storage.Endpoint, error) {
+	if m.checkNowFn != nil {
+		return m.checkNowFn(ctx, endpointID)
+	}
+	return storage.Endpoint{ID: endpointID, Status: "ok", LastStatusCode: 200}, nil
 }

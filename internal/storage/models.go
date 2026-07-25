@@ -17,5 +17,6 @@ type Endpoint struct {
 	ConsecutiveFailures      int
 	FailureNotificationsSent int
 	LastStatusCode           int
+	LastLatencyMs            int64
 	CreatedAt                time.Time
 }

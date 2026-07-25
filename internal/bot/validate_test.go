@@ -57,6 +57,10 @@ func TestValidateName(t *testing.T) {
 		{"contains dot", "prod.api", true},
 		{"contains at sign", "prod@api", true},
 		{"contains slash", "a/b", true},
+		{"all numeric", "123", true},
+		{"all numeric long", "1234567890", true},
+		{"numeric with letter", "123a", false},
+		{"numeric with hyphen", "123-api", false},
 	}
 
 	for _, tt := range tests {
