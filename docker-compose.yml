@@ -10,6 +10,7 @@ services:
       - DATABASE_PATH=/app/data/uptime.db
       - HTTP_TIMEOUT=${HTTP_TIMEOUT:-10s}
       - MAX_FAILURE_NOTIFICATIONS=${MAX_FAILURE_NOTIFICATIONS:-3}
+      - FAILURE_THRESHOLD=${FAILURE_THRESHOLD:-1}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - HEALTH_PORT=${HEALTH_PORT:-8080}
     ports:

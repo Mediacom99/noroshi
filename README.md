@@ -10,7 +10,8 @@ A self-contained uptime monitor in Go that uses a Telegram bot as its only inter
 
 - **Telegram bot UI** — manage endpoints entirely from a Telegram chat, with inline keyboards for details, interval changes, and confirmed deletes
 - **Reliable checks** — automatic retries on 5xx and connection errors (via retryablehttp), so transient network blips don't page you; any 2xx counts as up
-- **Sensible alerting** — failure alerts stop after N consecutive failures (configurable), recovery alerts include downtime duration
+- **Sensible alerting** — alerts start after a configurable failure threshold and stop after N consecutive failures; recovery alerts include downtime duration
+- **Pause/resume** — silence an endpoint during maintenance without deleting it
 - **On-demand checks** — `/status` probes all endpoints immediately and reports HTTP code and latency
 - **SQLite persistence** — endpoints survive restarts; pure-Go driver, no CGO
 - **Single container** — multi-arch image (`linux/amd64`, `linux/arm64`) published to GHCR, `/healthz` endpoint for orchestrators
@@ -56,7 +57,9 @@ CGO_ENABLED=0 go build ./cmd/monitor/
 | `/add <name> <url> [interval]` | Add endpoint, e.g. `/add prod-api https://example.com 30s` (default interval: `1m`) |
 | `/delete <name or id>` | Remove endpoint from monitoring |
 | `/interval <name or id> <interval>` | Change check interval |
-| `/list` | Dashboard of all endpoints with inline action buttons |
+| `/pause <name or id>` | Stop checks and alerts, keep the endpoint configured |
+| `/resume <name or id>` | Resume a paused endpoint |
+| `/list` | Dashboard of all endpoints with inline action buttons (check now, pause, interval, delete) |
 | `/status` | Check all endpoints right now and show HTTP code + latency |
 | `/help` | Show available commands |
 
@@ -73,6 +76,7 @@ CGO_ENABLED=0 go build ./cmd/monitor/
 | `DATABASE_PATH` | No | `./data/uptime.db` | SQLite database file path |
 | `HTTP_TIMEOUT` | No | `10s` | Health check HTTP timeout |
 | `MAX_FAILURE_NOTIFICATIONS` | No | `3` | Stop alerting after N consecutive failures |
+| `FAILURE_THRESHOLD` | No | `1` | Consecutive failures before the first alert |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, `error` |
 | `HEALTH_PORT` | No | `8080` | Port for the `/healthz` HTTP endpoint |
 

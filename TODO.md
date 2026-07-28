@@ -5,4 +5,4 @@
 - [ ] Multi-chat / multi-user support (currently a single configured chat)
 - [ ] Webhook mode as an alternative to long polling (for deployments behind a domain)
 - [ ] Uptime percentage / historical stats (requires persisting check results)
-- [ ] Pause/resume monitoring for an endpoint without deleting it
+- [ ] Periodic "still down" reminders while an outage continues
