@@ -719,3 +719,39 @@ func TestHandlePauseResume(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleIntervalPausedEndpoint(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok", Paused: true}
+
+	var updatedTo int
+	store := &mockStore{
+		getEndpointByNameFn: func(_ context.Context, _ string) (storage.Endpoint, error) {
+			return ep, nil
+		},
+		updateEndpointIntervalFn: func(_ context.Context, _ int64, interval int) error {
+			updatedTo = interval
+			return nil
+		},
+	}
+	sched := &mockScheduler{}
+	b := newTestBot(store, sched)
+
+	mc := &mockContext{
+		messageFn: func() *tele.Message {
+			return &tele.Message{Payload: "prod-api 5m"}
+		},
+	}
+
+	if err := b.handleInterval(mc); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if updatedTo != 300 {
+		t.Errorf("interval updated to %d, want 300", updatedTo)
+	}
+	if sched.addCalls != 0 {
+		t.Errorf("scheduler Add calls = %d, want 0 (paused endpoints must not get a job)", sched.addCalls)
+	}
+	if !strings.Contains(mc.sentMessages[0], "Updated interval") {
+		t.Errorf("expected confirmation, got: %s", mc.sentMessages[0])
+	}
+}

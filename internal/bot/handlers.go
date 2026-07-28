@@ -215,6 +215,10 @@ func (b *Bot) updateInterval(ep storage.Endpoint, seconds int) error {
 	}
 
 	b.scheduler.Remove(ep.ID)
+	// Paused endpoints have no job by design — just persist the new interval.
+	if ep.Paused {
+		return nil
+	}
 	ep.IntervalSeconds = seconds
 	if err := b.scheduler.Add(b.rootCtx, ep); err != nil {
 		ep.IntervalSeconds = oldSeconds
