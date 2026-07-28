@@ -784,3 +784,75 @@ func TestHandleRefreshCallback(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleCheckNowCallback(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "unknown"}
+	checked := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok", LastStatusCode: 200, LastLatencyMs: 42}
+
+	store := &mockStore{
+		getEndpointFn: func(_ context.Context, id int64) (storage.Endpoint, error) {
+			return ep, nil
+		},
+	}
+	sched := &mockScheduler{
+		checkNowFn: func(_ context.Context, id int64) (storage.Endpoint, error) {
+			return checked, nil
+		},
+	}
+	b := newTestBot(store, sched)
+
+	mc := &mockContext{
+		callbackFn: func() *tele.Callback {
+			return &tele.Callback{Data: "1"}
+		},
+	}
+
+	if err := b.handleCheckNowCallback(mc); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if len(mc.editedMessages) == 0 {
+		t.Fatal("expected the detail view to be edited with fresh results")
+	}
+	if !strings.Contains(mc.editedMessages[0], "prod-api") {
+		t.Errorf("edited message should contain endpoint name, got: %s", mc.editedMessages[0])
+	}
+	if len(mc.respondCalls) == 0 || mc.respondCalls[0].Text != "Checking..." {
+		t.Errorf("expected a 'Checking...' response, got: %+v", mc.respondCalls)
+	}
+}
+
+func TestHandlePauseCallback(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok"}
+
+	var pausedSet bool
+	store := &mockStore{
+		getEndpointFn: func(_ context.Context, id int64) (storage.Endpoint, error) {
+			return ep, nil
+		},
+		setEndpointPausedFn: func(_ context.Context, _ int64, paused bool) error {
+			pausedSet = paused
+			return nil
+		},
+	}
+	sched := &mockScheduler{}
+	b := newTestBot(store, sched)
+
+	mc := &mockContext{
+		callbackFn: func() *tele.Callback {
+			return &tele.Callback{Data: "1"}
+		},
+	}
+
+	if err := b.handlePauseCallback(mc); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if !pausedSet {
+		t.Error("expected SetEndpointPaused(true)")
+	}
+	if sched.removeCalls != 1 {
+		t.Errorf("scheduler Remove calls = %d, want 1 (job stopped on pause)", sched.removeCalls)
+	}
+	if len(mc.editedMessages) == 0 {
+		t.Fatal("expected the detail view to be re-rendered")
+	}
+}

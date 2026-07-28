@@ -204,9 +204,9 @@ func TestFormatEndpointDetail(t *testing.T) {
 	if markup == nil {
 		t.Fatal("should have markup")
 	}
-	// Row 1: interval + delete, Row 2: back
-	if len(markup.InlineKeyboard) != 2 {
-		t.Errorf("expected 2 keyboard rows, got %d", len(markup.InlineKeyboard))
+	// Row 1: check now + pause, Row 2: interval + delete, Row 3: back
+	if len(markup.InlineKeyboard) != 3 {
+		t.Errorf("expected 3 keyboard rows, got %d", len(markup.InlineKeyboard))
 	}
 }
 

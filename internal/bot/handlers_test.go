@@ -645,3 +645,77 @@ func TestHandleStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestHandlePauseResume(t *testing.T) {
+	notFoundErr := apperror.Wrap(apperror.ErrNotFound, fmt.Errorf("not found"))
+	active := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok"}
+
+	tests := []struct {
+		name          string
+		handler       func(*Bot, tele.Context) error
+		payload       string
+		paused        bool
+		wantContains  string
+		wantSchedAdd  int
+		wantSchedRm   int
+		wantStoreCall bool
+	}{
+		{name: "pause active", handler: (*Bot).handlePause, payload: "prod-api", wantContains: "Paused", wantSchedRm: 1, wantStoreCall: true},
+		{name: "resume paused", handler: (*Bot).handleResume, payload: "prod-api", paused: true, wantContains: "Resumed", wantSchedAdd: 1, wantStoreCall: true},
+		{name: "pause already paused", handler: (*Bot).handlePause, payload: "prod-api", paused: true, wantContains: "already paused"},
+		{name: "resume already active", handler: (*Bot).handleResume, payload: "prod-api", wantContains: "already resumed"},
+		{name: "missing argument", handler: (*Bot).handlePause, payload: "", wantContains: "Usage: /pause"},
+		{name: "not found", handler: (*Bot).handlePause, payload: "nope", wantContains: "Endpoint not found"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ep := active
+			ep.Paused = tt.paused
+
+			storeCalled := false
+			store := &mockStore{
+				getEndpointByNameFn: func(_ context.Context, name string) (storage.Endpoint, error) {
+					if name == "prod-api" {
+						return ep, nil
+					}
+					return storage.Endpoint{}, notFoundErr
+				},
+				getEndpointByURLFn: func(_ context.Context, _ string) (storage.Endpoint, error) {
+					return storage.Endpoint{}, notFoundErr
+				},
+				setEndpointPausedFn: func(_ context.Context, _ int64, _ bool) error {
+					storeCalled = true
+					return nil
+				},
+			}
+			sched := &mockScheduler{}
+			b := newTestBot(store, sched)
+
+			mc := &mockContext{
+				messageFn: func() *tele.Message {
+					return &tele.Message{Payload: tt.payload}
+				},
+			}
+
+			if err := tt.handler(b, mc); err != nil {
+				t.Fatalf("handler returned error: %v", err)
+			}
+			if len(mc.sentMessages) == 0 {
+				t.Fatal("expected a sent message, got none")
+			}
+			if !strings.Contains(mc.sentMessages[0], tt.wantContains) {
+				t.Errorf("message should contain %q, got: %s", tt.wantContains, mc.sentMessages[0])
+			}
+			if sched.addCalls != tt.wantSchedAdd {
+				t.Errorf("scheduler Add calls = %d, want %d", sched.addCalls, tt.wantSchedAdd)
+			}
+			if sched.removeCalls != tt.wantSchedRm {
+				t.Errorf("scheduler Remove calls = %d, want %d", sched.removeCalls, tt.wantSchedRm)
+			}
+			if storeCalled != tt.wantStoreCall {
+				t.Errorf("SetEndpointPaused called = %v, want %v", storeCalled, tt.wantStoreCall)
+			}
+		})
+	}
+}

@@ -14,6 +14,7 @@ type Config struct {
 	DatabasePath            string
 	HTTPTimeout             time.Duration
 	MaxFailureNotifications int
+	FailureThreshold        int
 	LogLevel                string
 	HealthPort              int
 }
@@ -54,6 +55,20 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("MAX_FAILURE_NOTIFICATIONS must be a valid integer: %w", err)
 		}
 	}
+	if maxFailures < 1 {
+		return nil, fmt.Errorf("MAX_FAILURE_NOTIFICATIONS must be at least 1")
+	}
+
+	failureThreshold := 1
+	if v := os.Getenv("FAILURE_THRESHOLD"); v != "" {
+		failureThreshold, err = strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("FAILURE_THRESHOLD must be a valid integer: %w", err)
+		}
+	}
+	if failureThreshold < 1 {
+		return nil, fmt.Errorf("FAILURE_THRESHOLD must be at least 1")
+	}
 
 	logLevel := os.Getenv("LOG_LEVEL")
 	if logLevel == "" {
@@ -74,6 +89,7 @@ func Load() (*Config, error) {
 		DatabasePath:            dbPath,
 		HTTPTimeout:             httpTimeout,
 		MaxFailureNotifications: maxFailures,
+		FailureThreshold:        failureThreshold,
 		LogLevel:                logLevel,
 		HealthPort:              healthPort,
 	}, nil

@@ -18,6 +18,8 @@ func (b *Bot) registerCallbacks() {
 	b.bot.Handle(&tele.Btn{Unique: cbInterval}, b.guarded(b.handleIntervalCallback))
 	b.bot.Handle(&tele.Btn{Unique: cbSetInterval}, b.guarded(b.handleSetIntervalCallback))
 	b.bot.Handle(&tele.Btn{Unique: cbRefresh}, b.guarded(b.handleRefreshCallback))
+	b.bot.Handle(&tele.Btn{Unique: cbCheckNow}, b.guarded(b.handleCheckNowCallback))
+	b.bot.Handle(&tele.Btn{Unique: cbPause}, b.guarded(b.handlePauseCallback))
 }
 
 // handleDetailCallback shows the detail view for a single endpoint.
@@ -167,6 +169,65 @@ func (b *Bot) handleSetIntervalCallback(c tele.Context) error {
 func (b *Bot) handleRefreshCallback(c tele.Context) error {
 	_ = c.Respond()
 	return b.editEndpointList(c)
+}
+
+// handleCheckNowCallback runs an immediate check for one endpoint and
+// re-renders its detail view with the fresh result.
+func (b *Bot) handleCheckNowCallback(c tele.Context) error {
+	epID, err := strconv.ParseInt(c.Callback().Data, 10, 64)
+	if err != nil {
+		return c.Respond(&tele.CallbackResponse{Text: "Invalid endpoint."})
+	}
+
+	ep, err := b.store.GetEndpoint(b.rootCtx, epID)
+	if err != nil {
+		return c.Respond(&tele.CallbackResponse{Text: "Endpoint not found."})
+	}
+
+	if b.scheduler == nil {
+		return c.Respond(&tele.CallbackResponse{Text: "Scheduler unavailable."})
+	}
+
+	_ = c.Respond(&tele.CallbackResponse{Text: "Checking..."})
+
+	updated, err := b.scheduler.CheckNow(b.rootCtx, ep.ID)
+	if err != nil {
+		slog.Error("check now", "id", ep.ID, "error", err)
+		return c.Respond(&tele.CallbackResponse{Text: "Error running check."})
+	}
+
+	text, markup := FormatEndpointDetail(updated)
+	_ = c.Edit(text, markup, tele.NoPreview)
+	return nil
+}
+
+// handlePauseCallback toggles the paused state and re-renders the detail view.
+func (b *Bot) handlePauseCallback(c tele.Context) error {
+	epID, err := strconv.ParseInt(c.Callback().Data, 10, 64)
+	if err != nil {
+		return c.Respond(&tele.CallbackResponse{Text: "Invalid endpoint."})
+	}
+
+	ep, err := b.store.GetEndpoint(b.rootCtx, epID)
+	if err != nil {
+		return c.Respond(&tele.CallbackResponse{Text: "Endpoint not found."})
+	}
+
+	if err := b.setPaused(ep, !ep.Paused); err != nil {
+		slog.Error("set paused", "id", ep.ID, "paused", !ep.Paused, "error", err)
+		return c.Respond(&tele.CallbackResponse{Text: "Error updating endpoint."})
+	}
+
+	label := "Paused"
+	if !ep.Paused {
+		label = "Resumed"
+	}
+	_ = c.Respond(&tele.CallbackResponse{Text: label})
+
+	ep.Paused = !ep.Paused
+	text, markup := FormatEndpointDetail(ep)
+	_ = c.Edit(text, markup, tele.NoPreview)
+	return nil
 }
 
 // editEndpointList re-renders the endpoint list and edits the callback message.

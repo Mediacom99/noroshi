@@ -103,6 +103,7 @@ type mockStore struct {
 	deleteEndpointFn         func(ctx context.Context, id int64) error
 	listEndpointsFn          func(ctx context.Context) ([]storage.Endpoint, error)
 	updateEndpointIntervalFn func(ctx context.Context, id int64, interval int) error
+	setEndpointPausedFn      func(ctx context.Context, id int64, paused bool) error
 }
 
 func (m *mockStore) AddEndpoint(ctx context.Context, name, url string, interval int) (storage.Endpoint, error) {
@@ -150,6 +151,13 @@ func (m *mockStore) ListEndpoints(ctx context.Context) ([]storage.Endpoint, erro
 func (m *mockStore) UpdateEndpointInterval(ctx context.Context, id int64, interval int) error {
 	if m.updateEndpointIntervalFn != nil {
 		return m.updateEndpointIntervalFn(ctx, id, interval)
+	}
+	return nil
+}
+
+func (m *mockStore) SetEndpointPaused(ctx context.Context, id int64, paused bool) error {
+	if m.setEndpointPausedFn != nil {
+		return m.setEndpointPausedFn(ctx, id, paused)
 	}
 	return nil
 }

@@ -18,5 +18,6 @@ type Endpoint struct {
 	FailureNotificationsSent int
 	LastStatusCode           int
 	LastLatencyMs            int64
+	Paused                   bool
 	CreatedAt                time.Time
 }

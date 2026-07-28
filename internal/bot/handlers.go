@@ -21,6 +21,8 @@ func (b *Bot) registerHandlers() {
 	b.bot.Handle("/list", b.guarded(b.handleList))
 	b.bot.Handle("/status", b.guarded(b.handleStatus))
 	b.bot.Handle("/interval", b.guarded(b.handleInterval))
+	b.bot.Handle("/pause", b.guarded(b.handlePause))
+	b.bot.Handle("/resume", b.guarded(b.handleResume))
 	b.bot.Handle("/help", b.guarded(b.handleHelp))
 
 	b.registerCallbacks()
@@ -229,6 +231,73 @@ func (b *Bot) updateInterval(ep storage.Endpoint, seconds int) error {
 
 func (b *Bot) handleHelp(c tele.Context) error {
 	return c.Send(FormatHelp())
+}
+
+func (b *Bot) handlePause(c tele.Context) error {
+	return b.handlePauseResume(c, true)
+}
+
+func (b *Bot) handleResume(c tele.Context) error {
+	return b.handlePauseResume(c, false)
+}
+
+func (b *Bot) handlePauseResume(c tele.Context, pause bool) error {
+	arg := strings.TrimSpace(c.Message().Payload)
+	verb := "resume"
+	if pause {
+		verb = "pause"
+	}
+	if arg == "" {
+		return c.Send(fmt.Sprintf("Usage: /%s <code>&lt;name or id&gt;</code>", verb))
+	}
+
+	ep, err := b.findEndpoint(arg)
+	if err != nil {
+		if errors.Is(err, apperror.ErrNotFound) {
+			return c.Send("Endpoint not found.")
+		}
+		slog.Error("find endpoint", "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+
+	if ep.Paused == pause {
+		return c.Send(fmt.Sprintf("%s is already %sd.", htmlEscape(ep.Name), verb))
+	}
+
+	if err := b.setPaused(ep, pause); err != nil {
+		slog.Error("set paused", "id", ep.ID, "paused", pause, "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+
+	if pause {
+		return c.Send(fmt.Sprintf("⏸ <b>Paused</b> %s — no more checks until resumed.", htmlEscape(ep.Name)))
+	}
+	return c.Send(fmt.Sprintf("▶️ <b>Resumed</b> %s — monitoring restarted.", htmlEscape(ep.Name)))
+}
+
+// setPaused persists the paused flag and adds/removes the scheduler job.
+// On scheduler failure during resume, the store update is rolled back.
+func (b *Bot) setPaused(ep storage.Endpoint, pause bool) error {
+	if err := b.store.SetEndpointPaused(b.rootCtx, ep.ID, pause); err != nil {
+		return err
+	}
+
+	if b.scheduler == nil {
+		return nil
+	}
+
+	if pause {
+		b.scheduler.Remove(ep.ID)
+		return nil
+	}
+
+	if err := b.scheduler.Add(b.rootCtx, ep); err != nil {
+		if rbErr := b.store.SetEndpointPaused(b.rootCtx, ep.ID, true); rbErr != nil {
+			slog.Error("rollback pause", "id", ep.ID, "error", rbErr)
+		}
+		return err
+	}
+	return nil
 }
 
 // findEndpoint tries to find an endpoint by ID first, then by name, then by URL.

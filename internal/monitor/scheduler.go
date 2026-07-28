@@ -15,7 +15,7 @@ import (
 type Store interface {
 	GetEndpoint(ctx context.Context, id int64) (storage.Endpoint, error)
 	UpdateEndpointStatus(ctx context.Context, id int64, status string, statusCode int, latencyMs int64) error
-	RecordFailure(ctx context.Context, id int64, statusCode int, latencyMs int64, maxNotifications int) (storage.Endpoint, error)
+	RecordFailure(ctx context.Context, id int64, statusCode int, latencyMs int64, maxNotifications int, failureThreshold int) (storage.Endpoint, error)
 	RecordRecovery(ctx context.Context, id int64, statusCode int, latencyMs int64) (storage.Endpoint, error)
 }
 
@@ -37,11 +37,14 @@ type Scheduler struct {
 	checker                 Checker
 	notifier                Notifier
 	maxFailureNotifications int
+	failureThreshold        int
 	ctx                     context.Context
 }
 
 // NewScheduler creates a Scheduler. Call Start() to begin running jobs.
-func NewScheduler(ctx context.Context, store Store, checker Checker, notifier Notifier, maxFailureNotifications int) (*Scheduler, error) {
+// failureThreshold is how many consecutive failures must occur before the
+// first alert is sent (1 = alert on the first failure).
+func NewScheduler(ctx context.Context, store Store, checker Checker, notifier Notifier, maxFailureNotifications int, failureThreshold int) (*Scheduler, error) {
 	cron, err := gocron.NewScheduler()
 	if err != nil {
 		return nil, fmt.Errorf("create gocron scheduler: %w", err)
@@ -52,6 +55,7 @@ func NewScheduler(ctx context.Context, store Store, checker Checker, notifier No
 		checker:                 checker,
 		notifier:                notifier,
 		maxFailureNotifications: maxFailureNotifications,
+		failureThreshold:        failureThreshold,
 		ctx:                     ctx,
 	}, nil
 }
@@ -100,28 +104,40 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 		return
 	}
 
+	// Defensive: paused endpoints have no job, but a job may already be in
+	// flight when the pause happens.
+	if ep.Paused {
+		return
+	}
+
 	statusCode, latency, checkErr := s.checker.Check(ctx, ep.URL)
 	latencyMs := latency.Milliseconds()
 
 	if checkErr != nil || statusCode < 200 || statusCode >= 300 {
 		// NOT_OK
-		updated, err := s.store.RecordFailure(ctx, endpointID, statusCode, latencyMs, s.maxFailureNotifications)
+		updated, err := s.store.RecordFailure(ctx, endpointID, statusCode, latencyMs, s.maxFailureNotifications, s.failureThreshold)
 		if err != nil {
 			slog.Error("scheduler: record failure", "id", endpointID, "error", err)
 			return
 		}
 
-		slog.Info("scheduler: endpoint down",
-			"id", endpointID, "name", ep.Name, "url", ep.URL,
-			"status_code", statusCode, "duration_ms", latencyMs,
-			"consecutive_failures", updated.ConsecutiveFailures)
-
 		// The store caps failure_notifications_sent at maxFailureNotifications,
 		// so notify only when this failure actually incremented the counter.
 		if updated.FailureNotificationsSent > ep.FailureNotificationsSent {
+			slog.Info("scheduler: endpoint down",
+				"id", endpointID, "name", ep.Name, "url", ep.URL,
+				"status_code", statusCode, "duration_ms", latencyMs,
+				"consecutive_failures", updated.ConsecutiveFailures)
 			if err := s.notifier.NotifyFailure(ctx, updated); err != nil {
 				slog.Error("scheduler: notify failure", "id", endpointID, "error", err)
 			}
+		} else {
+			// Below the alert threshold or past the notification cap — log at
+			// debug to avoid spamming on every interval during a long outage.
+			slog.Debug("scheduler: check failed",
+				"id", endpointID, "name", ep.Name, "url", ep.URL,
+				"status_code", statusCode, "duration_ms", latencyMs,
+				"consecutive_failures", updated.ConsecutiveFailures)
 		}
 	} else {
 		// OK
@@ -162,6 +178,11 @@ func (s *Scheduler) CheckNow(ctx context.Context, endpointID int64) (storage.End
 	ep, err := s.store.GetEndpoint(ctx, endpointID)
 	if err != nil {
 		return storage.Endpoint{}, err
+	}
+
+	// Paused endpoints are not checked, not even on demand.
+	if ep.Paused {
+		return ep, nil
 	}
 
 	statusCode, latency, checkErr := s.checker.Check(ctx, ep.URL)

@@ -200,7 +200,7 @@ func TestRecordFailure(t *testing.T) {
 	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 
 	// First failure
-	updated, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3)
+	updated, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3, 1)
 	if err != nil {
 		t.Fatalf("RecordFailure: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestRecordFailure(t *testing.T) {
 	}
 
 	// Second failure
-	updated2, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3)
+	updated2, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3, 1)
 	if err != nil {
 		t.Fatalf("RecordFailure 2: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestRecordFailureNotificationCap(t *testing.T) {
 
 	maxNotifications := 3
 	for range maxNotifications + 2 {
-		if _, err := store.RecordFailure(ctx, ep.ID, 503, 12, maxNotifications); err != nil {
+		if _, err := store.RecordFailure(ctx, ep.ID, 503, 12, maxNotifications, 1); err != nil {
 			t.Fatalf("RecordFailure: %v", err)
 		}
 	}
@@ -266,10 +266,10 @@ func TestRecordRecovery(t *testing.T) {
 	ctx := context.Background()
 
 	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
-	if _, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3); err != nil {
+	if _, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3, 1); err != nil {
 		t.Fatalf("RecordFailure: %v", err)
 	}
-	if _, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3); err != nil {
+	if _, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3, 1); err != nil {
 		t.Fatalf("RecordFailure: %v", err)
 	}
 
@@ -402,5 +402,59 @@ func TestUpdateEndpointStatus(t *testing.T) {
 	}
 	if updated.LastStatusCode != 200 {
 		t.Errorf("LastStatusCode = %d, want 200", updated.LastStatusCode)
+	}
+}
+
+func TestRecordFailureThreshold(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+
+	// Threshold 3: first two failures must not count as notifications.
+	for i := range 4 {
+		updated, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3, 3)
+		if err != nil {
+			t.Fatalf("RecordFailure %d: %v", i, err)
+		}
+		want := i - 1 // failures 3 and 4 → 1 and 2 notifications
+		if want < 0 {
+			want = 0
+		}
+		if updated.FailureNotificationsSent != want {
+			t.Errorf("failure %d: FailureNotificationsSent = %d, want %d", i+1, updated.FailureNotificationsSent, want)
+		}
+	}
+}
+
+func TestSetEndpointPaused(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+	if ep.Paused {
+		t.Error("new endpoint should not be paused")
+	}
+
+	if err := store.SetEndpointPaused(ctx, ep.ID, true); err != nil {
+		t.Fatalf("SetEndpointPaused: %v", err)
+	}
+	updated, _ := store.GetEndpoint(ctx, ep.ID)
+	if !updated.Paused {
+		t.Error("endpoint should be paused")
+	}
+
+	if err := store.SetEndpointPaused(ctx, ep.ID, false); err != nil {
+		t.Fatalf("SetEndpointPaused: %v", err)
+	}
+	updated, _ = store.GetEndpoint(ctx, ep.ID)
+	if updated.Paused {
+		t.Error("endpoint should not be paused")
+	}
+
+	if err := store.SetEndpointPaused(ctx, 999, true); !errors.Is(err, apperror.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }

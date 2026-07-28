@@ -20,6 +20,7 @@ type Store interface {
 	DeleteEndpoint(ctx context.Context, id int64) error
 	ListEndpoints(ctx context.Context) ([]storage.Endpoint, error)
 	UpdateEndpointInterval(ctx context.Context, id int64, intervalSeconds int) error
+	SetEndpointPaused(ctx context.Context, id int64, paused bool) error
 }
 
 // Scheduler defines the scheduling methods the bot needs.
@@ -94,6 +95,8 @@ func (b *Bot) registerCommands() {
 		{Text: "delete", Description: "Remove an endpoint"},
 		{Text: "interval", Description: "Change check interval"},
 		{Text: "status", Description: "Check all endpoints now"},
+		{Text: "pause", Description: "Pause monitoring an endpoint"},
+		{Text: "resume", Description: "Resume monitoring an endpoint"},
 		{Text: "help", Description: "Show help and usage info"},
 	})
 	if err != nil {
@@ -104,7 +107,10 @@ func (b *Bot) registerCommands() {
 // guarded wraps a handler to ignore messages from chats other than the configured one.
 func (b *Bot) guarded(h tele.HandlerFunc) tele.HandlerFunc {
 	return func(c tele.Context) error {
-		if c.Chat().ID != b.chatID {
+		// Chat() can be nil for some update types (e.g. channel posts) —
+		// guard against a nil dereference.
+		chat := c.Chat()
+		if chat == nil || chat.ID != b.chatID {
 			return nil
 		}
 		return h(c)

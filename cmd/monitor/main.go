@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -59,7 +58,7 @@ func main() {
 	notifier := bot.NewTelegramNotifier(teleBot, cfg.MaxFailureNotifications)
 
 	// Create scheduler with notifier
-	scheduler, err := monitor.NewScheduler(ctx, store, checker, notifier, cfg.MaxFailureNotifications)
+	scheduler, err := monitor.NewScheduler(ctx, store, checker, notifier, cfg.MaxFailureNotifications, cfg.FailureThreshold)
 	if err != nil {
 		slog.Error("create scheduler", "error", err)
 		os.Exit(1)
@@ -75,6 +74,9 @@ func main() {
 		os.Exit(1)
 	}
 	for _, ep := range endpoints {
+		if ep.Paused {
+			continue
+		}
 		if err := scheduler.Add(ctx, ep); err != nil {
 			slog.Error("add endpoint to scheduler", "id", ep.ID, "error", err)
 		}
@@ -113,7 +115,7 @@ func startHealthServer(port int) *http.Server {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	srv := &http.Server{
