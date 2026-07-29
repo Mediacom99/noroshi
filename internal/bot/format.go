@@ -77,15 +77,49 @@ func FormatDuration(d time.Duration) string {
 	return strings.Join(parts, " ")
 }
 
+// formatCheckedAt renders a check timestamp relative to now ("2m ago"),
+// falling back to an absolute date for anything older than a day.
+func formatCheckedAt(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < 10*time.Second:
+		return "just now"
+	case d < 24*time.Hour:
+		return FormatDuration(d) + " ago"
+	default:
+		return t.UTC().Format("2006-01-02 15:04 UTC")
+	}
+}
+
+// endpointLine renders one compact status line: "🟢 prod-api · 45ms".
+func endpointLine(ep storage.Endpoint) string {
+	line := fmt.Sprintf("%s <b>%s</b>", displayEmoji(ep), htmlEscape(ep.Name))
+	switch {
+	case ep.Paused:
+		line += " · paused"
+	case ep.Status == "not_ok":
+		if ep.LastStatusCode > 0 {
+			line += fmt.Sprintf(" · HTTP %d", ep.LastStatusCode)
+		} else {
+			line += " · connection error"
+		}
+	case !ep.LastCheckedAt.Valid:
+		line += " · pending"
+	default: // ok
+		line += fmt.Sprintf(" · %dms", ep.LastLatencyMs)
+	}
+	return line
+}
+
 // FormatFailure formats a failure notification message (no HTTP status code available).
 func FormatFailure(ep storage.Endpoint, maxFailures int) string {
 	return fmt.Sprintf(
 		"🔴 <b>Endpoint Down</b>\n\n"+
-			"<b>Name:</b> %s\n"+
-			"<b>URL:</b> <code>%s</code>\n"+
+			"<b>%s</b>\n"+
+			"<code>%s</code>\n\n"+
 			"<b>HTTP:</b> connection error\n"+
 			"<b>Time:</b> %s\n"+
-			"<b>Alerts:</b> %d of %d",
+			"<b>Alert:</b> %d of %d",
 		htmlEscape(ep.Name),
 		htmlEscape(ep.URL),
 		time.Now().UTC().Format("15:04:05 UTC"),
@@ -98,14 +132,15 @@ func FormatFailure(ep storage.Endpoint, maxFailures int) string {
 func FormatFailureWithCode(ep storage.Endpoint, statusCode int, maxFailures int) string {
 	return fmt.Sprintf(
 		"🔴 <b>Endpoint Down</b>\n\n"+
-			"<b>Name:</b> %s\n"+
-			"<b>URL:</b> <code>%s</code>\n"+
-			"<b>HTTP:</b> %d\n"+
+			"<b>%s</b>\n"+
+			"<code>%s</code>\n\n"+
+			"<b>HTTP:</b> %d · %dms\n"+
 			"<b>Time:</b> %s\n"+
-			"<b>Alerts:</b> %d of %d",
+			"<b>Alert:</b> %d of %d",
 		htmlEscape(ep.Name),
 		htmlEscape(ep.URL),
 		statusCode,
+		ep.LastLatencyMs,
 		time.Now().UTC().Format("15:04:05 UTC"),
 		ep.FailureNotificationsSent,
 		maxFailures,
@@ -116,15 +151,42 @@ func FormatFailureWithCode(ep storage.Endpoint, statusCode int, maxFailures int)
 func FormatRecovery(ep storage.Endpoint, downtime time.Duration) string {
 	return fmt.Sprintf(
 		"🟢 <b>Endpoint Recovered</b>\n\n"+
-			"<b>Name:</b> %s\n"+
-			"<b>URL:</b> <code>%s</code>\n"+
+			"<b>%s</b>\n"+
+			"<code>%s</code>\n\n"+
 			"<b>Downtime:</b> %s\n"+
-			"<b>Time:</b> %s",
+			"<b>Recovered:</b> %s",
 		htmlEscape(ep.Name),
 		htmlEscape(ep.URL),
 		FormatDuration(downtime),
 		time.Now().UTC().Format("15:04:05 UTC"),
 	)
+}
+
+// AlertKeyboard returns the action buttons attached to a failure alert.
+func AlertKeyboard(ep storage.Endpoint) *tele.ReplyMarkup {
+	id := strconv.FormatInt(ep.ID, 10)
+	menu := &tele.ReplyMarkup{}
+	menu.Inline(
+		menu.Row(
+			menu.Data("🔍 Check now", cbCheckNow, id),
+			menu.Data("⏸ Pause", cbPause, id),
+			menu.Data("📊 Detail", cbDetail, id),
+		),
+	)
+	return menu
+}
+
+// RecoveryKeyboard returns the buttons attached to a recovery alert.
+func RecoveryKeyboard(ep storage.Endpoint) *tele.ReplyMarkup {
+	id := strconv.FormatInt(ep.ID, 10)
+	menu := &tele.ReplyMarkup{}
+	menu.Inline(
+		menu.Row(
+			menu.Data("📊 Detail", cbDetail, id),
+			menu.Data("🔍 Check now", cbCheckNow, id),
+		),
+	)
+	return menu
 }
 
 // FormatEndpointList formats the dashboard overview.
@@ -134,23 +196,38 @@ func FormatEndpointList(endpoints []storage.Endpoint) (string, *tele.ReplyMarkup
 		return "No endpoints are being monitored.\nUse /add to start monitoring.", nil
 	}
 
-	healthy := 0
+	healthy, down, paused, pending := 0, 0, 0, 0
 	for _, ep := range endpoints {
-		if ep.Status == "ok" {
+		switch {
+		case ep.Paused:
+			paused++
+		case ep.Status == "ok":
 			healthy++
+		case ep.Status == "not_ok":
+			down++
+		default:
+			pending++
 		}
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "📊 <b>%d/%d endpoints healthy</b>\n", healthy, len(endpoints))
+	fmt.Fprintf(&b, "📊 <b>%d/%d healthy</b>", healthy, len(endpoints))
+	if down > 0 {
+		fmt.Fprintf(&b, " · %d down", down)
+	}
+	if paused > 0 {
+		fmt.Fprintf(&b, " · %d paused", paused)
+	}
+	if pending > 0 {
+		fmt.Fprintf(&b, " · %d pending", pending)
+	}
 
 	menu := &tele.ReplyMarkup{}
 	var rows []tele.Row
 	for _, ep := range endpoints {
 		id := strconv.FormatInt(ep.ID, 10)
-		emoji := displayEmoji(ep)
-		fmt.Fprintf(&b, "\n%s <b>%s</b> — <code>%s</code>", emoji, htmlEscape(ep.Name), htmlEscape(ep.URL))
-		rows = append(rows, menu.Row(menu.Data(fmt.Sprintf("%s %s", emoji, ep.Name), cbDetail, id)))
+		fmt.Fprintf(&b, "\n%s", endpointLine(ep))
+		rows = append(rows, menu.Row(menu.Data(fmt.Sprintf("%s %s", displayEmoji(ep), ep.Name), cbDetail, id)))
 	}
 	rows = append(rows, menu.Row(menu.Data("🔄 Refresh", cbRefresh)))
 	menu.Inline(rows...)
@@ -170,17 +247,16 @@ func FormatStatus(endpoints []storage.Endpoint) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "📊 <b>Status check — %d/%d healthy</b>\n", healthy, len(endpoints))
 	for _, ep := range endpoints {
-		emoji := displayEmoji(ep)
-		fmt.Fprintf(&b, "\n%s <b>%s</b>", emoji, htmlEscape(ep.Name))
+		fmt.Fprintf(&b, "\n%s <b>%s</b>", displayEmoji(ep), htmlEscape(ep.Name))
 		switch {
 		case ep.Paused:
-			b.WriteString(" — paused")
+			b.WriteString(" · paused")
 		case ep.LastStatusCode > 0:
-			fmt.Fprintf(&b, " — HTTP %d · %dms", ep.LastStatusCode, ep.LastLatencyMs)
+			fmt.Fprintf(&b, " · HTTP %d · %dms", ep.LastStatusCode, ep.LastLatencyMs)
 		case ep.Status == "not_ok":
-			b.WriteString(" — connection error")
+			b.WriteString(" · connection error")
 		default:
-			b.WriteString(" — not checked yet")
+			b.WriteString(" · pending")
 		}
 	}
 	return b.String()
@@ -192,15 +268,13 @@ func FormatEndpointDetail(ep storage.Endpoint) (string, *tele.ReplyMarkup) {
 	interval := FormatDuration(time.Duration(ep.IntervalSeconds) * time.Second)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s <b>%s</b>\n\n", emoji, htmlEscape(ep.Name))
-	fmt.Fprintf(&b, "<b>URL:</b> <code>%s</code>\n", htmlEscape(ep.URL))
-	fmt.Fprintf(&b, "<b>Interval:</b> %s\n", interval)
+	fmt.Fprintf(&b, "%s <b>%s</b>", emoji, htmlEscape(ep.Name))
 	if ep.Paused {
-		fmt.Fprintf(&b, "<b>Status:</b> paused (last known: %s)", ep.Status)
-	} else {
-		fmt.Fprintf(&b, "<b>Status:</b> %s", ep.Status)
+		b.WriteString("  <i>(monitoring paused)</i>")
 	}
+	fmt.Fprintf(&b, "\n\n<b>URL:</b> <code>%s</code>\n", htmlEscape(ep.URL))
 
+	fmt.Fprintf(&b, "<b>Status:</b> %s", ep.Status)
 	if ep.Status == "not_ok" && ep.ConsecutiveFailures > 0 {
 		fmt.Fprintf(&b, " (%d failures)", ep.ConsecutiveFailures)
 	}
@@ -209,9 +283,11 @@ func FormatEndpointDetail(ep storage.Endpoint) (string, *tele.ReplyMarkup) {
 		fmt.Fprintf(&b, "\n<b>HTTP:</b> %d", ep.LastStatusCode)
 	}
 
+	fmt.Fprintf(&b, "\n<b>Interval:</b> %s", interval)
+
 	if ep.LastCheckedAt.Valid {
 		fmt.Fprintf(&b, "\n<b>Latency:</b> %dms", ep.LastLatencyMs)
-		fmt.Fprintf(&b, "\n<b>Last check:</b> %s", ep.LastCheckedAt.Time.UTC().Format("15:04:05 UTC"))
+		fmt.Fprintf(&b, "\n<b>Last check:</b> %s", formatCheckedAt(ep.LastCheckedAt.Time))
 	} else {
 		b.WriteString("\n<b>Last check:</b> never")
 	}
@@ -242,14 +318,16 @@ func FormatEndpointDetail(ep storage.Endpoint) (string, *tele.ReplyMarkup) {
 // FormatHelp returns the help text.
 func FormatHelp() string {
 	return "📖 <b>Noroshi — Uptime Monitor</b>\n\n" +
-		"/list — View all endpoints\n" +
-		"/status — Check all endpoints now\n" +
-		"/add <code>&lt;name&gt; &lt;url&gt; [interval]</code> — Add endpoint (default: 1m)\n" +
-		"/delete <code>&lt;name or id&gt;</code> — Remove endpoint\n" +
+		"<b>Monitoring</b>\n" +
+		"/add <code>&lt;name&gt; &lt;url&gt; [interval]</code> — Add endpoint (default 1m)\n" +
+		"/list — Dashboard with per-endpoint actions\n" +
+		"/status — Check everything right now\n" +
+		"/pause <code>&lt;name or id&gt;</code> — Silence an endpoint\n" +
+		"/resume <code>&lt;name or id&gt;</code> — Resume monitoring\n\n" +
+		"<b>Manage</b>\n" +
 		"/interval <code>&lt;name or id&gt; &lt;duration&gt;</code> — Change interval\n" +
-		"/pause <code>&lt;name or id&gt;</code> — Stop monitoring (keeps config)\n" +
-		"/resume <code>&lt;name or id&gt;</code> — Resume monitoring\n" +
+		"/delete <code>&lt;name or id&gt;</code> — Remove endpoint\n" +
 		"/help — This message\n\n" +
-		"<b>Intervals:</b> 10s, 30s, 1m, 5m, 1h (min 10s)\n" +
-		"<b>Tip:</b> Use endpoint name or ID in commands."
+		"<b>Intervals:</b> 10s · 30s · 1m · 5m · 1h (min 10s)\n" +
+		"<b>Tip:</b> tap an endpoint in /list for actions"
 }

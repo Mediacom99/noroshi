@@ -255,7 +255,7 @@ func TestHandleConfirmDeleteCallback(t *testing.T) {
 				},
 			},
 			wantRespondText:  "Deleted!",
-			wantEditContains: []string{"endpoints healthy"},
+			wantEditContains: []string{"healthy"},
 		},
 		{
 			name:            "invalid ID",
@@ -403,7 +403,7 @@ func TestHandleBackCallback(t *testing.T) {
 					}, nil
 				},
 			},
-			wantEditContains: []string{"endpoints healthy"},
+			wantEditContains: []string{"healthy"},
 		},
 		{
 			name:             "empty list",
@@ -575,7 +575,7 @@ func TestHandleSetIntervalCallback(t *testing.T) {
 				},
 			},
 			wantRespondText:  "5m",
-			wantEditContains: []string{"endpoints healthy"},
+			wantEditContains: []string{"healthy"},
 		},
 		{
 			name:            "invalid data format",
@@ -642,7 +642,7 @@ func TestHandleSetIntervalCallback(t *testing.T) {
 			},
 			scheduler:        &mockScheduler{},
 			wantRespondText:  "5m",
-			wantEditContains: []string{"endpoints healthy"},
+			wantEditContains: []string{"healthy"},
 			wantRemoveCalls:  1,
 			wantAddCalls:     1,
 		},
@@ -662,7 +662,7 @@ func TestHandleSetIntervalCallback(t *testing.T) {
 			},
 			scheduler:        nil,
 			wantRespondText:  "5m",
-			wantEditContains: []string{"endpoints healthy"},
+			wantEditContains: []string{"healthy"},
 		},
 	}
 
@@ -741,7 +741,7 @@ func TestHandleRefreshCallback(t *testing.T) {
 					}, nil
 				},
 			},
-			wantEditContains: []string{"endpoints healthy"},
+			wantEditContains: []string{"healthy"},
 		},
 		{
 			name:             "empty list",

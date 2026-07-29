@@ -344,7 +344,7 @@ func TestHandleList(t *testing.T) {
 					}, nil
 				},
 			},
-			wantContains: []string{"endpoints healthy"},
+			wantContains: []string{"healthy"},
 		},
 		{
 			name: "store error",

@@ -129,7 +129,7 @@ func TestFormatEndpointListSingle(t *testing.T) {
 
 	text, markup := FormatEndpointList(eps)
 
-	if !strings.Contains(text, "1/1 endpoints healthy") {
+	if !strings.Contains(text, "1/1 healthy") {
 		t.Error("should contain healthy summary")
 	}
 	if markup == nil {
@@ -157,7 +157,7 @@ func TestFormatEndpointListMultiple(t *testing.T) {
 
 	text, markup := FormatEndpointList(eps)
 
-	if !strings.Contains(text, "1/2 endpoints healthy") {
+	if !strings.Contains(text, "1/2 healthy") {
 		t.Error("should contain healthy summary")
 	}
 	if markup == nil {
@@ -193,7 +193,7 @@ func TestFormatEndpointDetail(t *testing.T) {
 		{"status", "not_ok"},
 		{"failures", "3 failures"},
 		{"http status", "<b>HTTP:</b> 503"},
-		{"last check", "14:32:05 UTC"},
+		{"last check", "2026-03-13 14:32 UTC"},
 	}
 	for _, c := range checks {
 		if !strings.Contains(text, c.contains) {
@@ -284,5 +284,71 @@ func TestHTMLEscapeInFormat(t *testing.T) {
 		if !strings.Contains(msg, "?a=1&amp;b=2") {
 			t.Error("URL ampersand should be HTML-escaped")
 		}
+	}
+}
+
+func TestFormatCheckedAt(t *testing.T) {
+	tests := []struct {
+		name     string
+		t        time.Time
+		contains string
+	}{
+		{"just now", time.Now().Add(-3 * time.Second), "just now"},
+		{"seconds ago", time.Now().Add(-45 * time.Second), "45s ago"},
+		{"minutes ago", time.Now().Add(-5 * time.Minute), "5m"},
+		{"hours ago", time.Now().Add(-2 * time.Hour), "2h"},
+		{"absolute date", time.Date(2026, 3, 13, 14, 32, 5, 0, time.UTC), "2026-03-13"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatCheckedAt(tt.t); !strings.Contains(got, tt.contains) {
+				t.Errorf("formatCheckedAt = %q, want containing %q", got, tt.contains)
+			}
+		})
+	}
+}
+
+func TestAlertKeyboards(t *testing.T) {
+	ep := storage.Endpoint{ID: 7, Name: "prod-api"}
+
+	alert := AlertKeyboard(ep)
+	if len(alert.InlineKeyboard) != 1 || len(alert.InlineKeyboard[0]) != 3 {
+		t.Errorf("alert keyboard should have 1 row of 3 buttons, got %+v", alert.InlineKeyboard)
+	}
+
+	recovery := RecoveryKeyboard(ep)
+	if len(recovery.InlineKeyboard) != 1 || len(recovery.InlineKeyboard[0]) != 2 {
+		t.Errorf("recovery keyboard should have 1 row of 2 buttons, got %+v", recovery.InlineKeyboard)
+	}
+}
+
+func TestFormatEndpointListMixed(t *testing.T) {
+	eps := []storage.Endpoint{
+		{ID: 1, Name: "ok-ep", URL: "https://a.com", Status: "ok", LastStatusCode: 200, LastLatencyMs: 42,
+			LastCheckedAt: sql.NullTime{Time: time.Now(), Valid: true}},
+		{ID: 2, Name: "down-ep", URL: "https://b.com", Status: "not_ok", LastStatusCode: 503},
+		{ID: 3, Name: "paused-ep", URL: "https://c.com", Status: "ok", Paused: true},
+		{ID: 4, Name: "new-ep", URL: "https://d.com", Status: "unknown"},
+	}
+
+	text, _ := FormatEndpointList(eps)
+
+	for _, want := range []string{"1/4 healthy", "1 down", "1 paused", "1 pending", "42ms", "HTTP 503", "paused", "pending"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("list should contain %q, got: %s", want, text)
+		}
+	}
+}
+
+func TestFormatEndpointDetailPaused(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", IntervalSeconds: 30, Status: "ok", Paused: true}
+
+	text, markup := FormatEndpointDetail(ep)
+
+	if !strings.Contains(text, "monitoring paused") {
+		t.Errorf("detail should show paused state, got: %s", text)
+	}
+	if !strings.Contains(markup.InlineKeyboard[0][1].Text, "Resume") {
+		t.Errorf("pause button should become Resume, got %q", markup.InlineKeyboard[0][1].Text)
 	}
 }

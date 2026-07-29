@@ -118,16 +118,26 @@ func (b *Bot) guarded(h tele.HandlerFunc) tele.HandlerFunc {
 }
 
 // SendMessage sends a text message to the configured chat ID.
-func (b *Bot) SendMessage(text string) error {
+// markup is optional and may be nil.
+func (b *Bot) SendMessage(text string, markup *tele.ReplyMarkup) error {
 	chat := &tele.Chat{ID: b.chatID}
-	_, err := b.bot.Send(chat, text, tele.NoPreview)
+	opts := []interface{}{tele.NoPreview}
+	if markup != nil {
+		opts = append(opts, markup)
+	}
+	_, err := b.bot.Send(chat, text, opts...)
 	return err
 }
 
 // SendSilentMessage sends a text message without notification sound.
-func (b *Bot) SendSilentMessage(text string) error {
+// markup is optional and may be nil.
+func (b *Bot) SendSilentMessage(text string, markup *tele.ReplyMarkup) error {
 	chat := &tele.Chat{ID: b.chatID}
-	_, err := b.bot.Send(chat, text, tele.NoPreview, tele.Silent)
+	opts := []interface{}{tele.NoPreview, tele.Silent}
+	if markup != nil {
+		opts = append(opts, markup)
+	}
+	_, err := b.bot.Send(chat, text, opts...)
 	return err
 }
 
@@ -143,6 +153,7 @@ func NewTelegramNotifier(bot *Bot, maxFail int) *TelegramNotifier {
 }
 
 // NotifyFailure sends a failure notification to the configured chat.
+// The alert carries action buttons: check now, pause, detail.
 func (n *TelegramNotifier) NotifyFailure(ctx context.Context, ep storage.Endpoint) error {
 	var msg string
 	if ep.LastStatusCode > 0 {
@@ -150,11 +161,11 @@ func (n *TelegramNotifier) NotifyFailure(ctx context.Context, ep storage.Endpoin
 	} else {
 		msg = FormatFailure(ep, n.maxFail)
 	}
-	return n.bot.SendMessage(msg)
+	return n.bot.SendMessage(msg, AlertKeyboard(ep))
 }
 
 // NotifyRecovery sends a silent recovery notification to the configured chat.
 func (n *TelegramNotifier) NotifyRecovery(ctx context.Context, ep storage.Endpoint, downtime time.Duration) error {
 	msg := FormatRecovery(ep, downtime)
-	return n.bot.SendSilentMessage(msg)
+	return n.bot.SendSilentMessage(msg, RecoveryKeyboard(ep))
 }
