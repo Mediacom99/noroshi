@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	"noroshi/internal/apperror"
 
@@ -438,7 +439,7 @@ func TestSetEndpointPaused(t *testing.T) {
 		t.Error("new endpoint should not be paused")
 	}
 
-	if err := store.SetEndpointPaused(ctx, ep.ID, true); err != nil {
+	if err := store.SetEndpointPaused(ctx, ep.ID, true, sql.NullTime{}); err != nil {
 		t.Fatalf("SetEndpointPaused: %v", err)
 	}
 	updated, _ := store.GetEndpoint(ctx, ep.ID)
@@ -446,7 +447,7 @@ func TestSetEndpointPaused(t *testing.T) {
 		t.Error("endpoint should be paused")
 	}
 
-	if err := store.SetEndpointPaused(ctx, ep.ID, false); err != nil {
+	if err := store.SetEndpointPaused(ctx, ep.ID, false, sql.NullTime{}); err != nil {
 		t.Fatalf("SetEndpointPaused: %v", err)
 	}
 	updated, _ = store.GetEndpoint(ctx, ep.ID)
@@ -454,7 +455,99 @@ func TestSetEndpointPaused(t *testing.T) {
 		t.Error("endpoint should not be paused")
 	}
 
-	if err := store.SetEndpointPaused(ctx, 999, true); !errors.Is(err, apperror.ErrNotFound) {
+	if err := store.SetEndpointPaused(ctx, 999, true, sql.NullTime{}); !errors.Is(err, apperror.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestRecordFailureSetsLastNotified(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+
+	// Below threshold (2): no notification, no last_notified_at.
+	updated, _ := store.RecordFailure(ctx, ep.ID, 503, 12, 3, 2)
+	if updated.LastNotifiedAt.Valid {
+		t.Error("LastNotifiedAt should not be set below the alert threshold")
+	}
+
+	// Threshold reached: notified.
+	updated, _ = store.RecordFailure(ctx, ep.ID, 503, 12, 3, 2)
+	if !updated.LastNotifiedAt.Valid {
+		t.Error("LastNotifiedAt should be set when a notification is counted")
+	}
+
+	// Recovery clears it.
+	recovered, err := store.RecordRecovery(ctx, ep.ID, 200, 12)
+	if err != nil {
+		t.Fatalf("RecordRecovery: %v", err)
+	}
+	after, _ := store.GetEndpoint(ctx, ep.ID)
+	if after.LastNotifiedAt.Valid {
+		t.Error("LastNotifiedAt should be cleared on recovery")
+	}
+	if recovered.AlertMessageID != 0 && after.AlertMessageID != 0 {
+		t.Error("AlertMessageID should be cleared on recovery")
+	}
+}
+
+func TestAlertMessageID(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+
+	if err := store.SetAlertMessageID(ctx, ep.ID, 4242); err != nil {
+		t.Fatalf("SetAlertMessageID: %v", err)
+	}
+	updated, _ := store.GetEndpoint(ctx, ep.ID)
+	if updated.AlertMessageID != 4242 {
+		t.Errorf("AlertMessageID = %d, want 4242", updated.AlertMessageID)
+	}
+
+	if err := store.SetAlertMessageID(ctx, 999, 1); !errors.Is(err, apperror.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestListExpiredPauses(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep1, _ := store.AddEndpoint(ctx, "expired", "https://a.com", 30)
+	ep2, _ := store.AddEndpoint(ctx, "future", "https://b.com", 30)
+	ep3, _ := store.AddEndpoint(ctx, "indefinite", "https://c.com", 30)
+
+	past := sql.NullTime{Time: time.Now().Add(-time.Minute), Valid: true}
+	future := sql.NullTime{Time: time.Now().Add(time.Hour), Valid: true}
+	store.SetEndpointPaused(ctx, ep1.ID, true, past)
+	store.SetEndpointPaused(ctx, ep2.ID, true, future)
+	store.SetEndpointPaused(ctx, ep3.ID, true, sql.NullTime{})
+
+	expired, err := store.ListExpiredPauses(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("ListExpiredPauses: %v", err)
+	}
+	if len(expired) != 1 || expired[0].ID != ep1.ID {
+		t.Errorf("expected only the expired pause, got %+v", expired)
+	}
+}
+
+func TestTouchLastNotified(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+	if err := store.TouchLastNotified(ctx, ep.ID); err != nil {
+		t.Fatalf("TouchLastNotified: %v", err)
+	}
+	updated, _ := store.GetEndpoint(ctx, ep.ID)
+	if !updated.LastNotifiedAt.Valid {
+		t.Error("LastNotifiedAt should be set")
 	}
 }

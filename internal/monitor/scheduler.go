@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"time"
@@ -17,6 +18,10 @@ type Store interface {
 	UpdateEndpointStatus(ctx context.Context, id int64, status string, statusCode int, latencyMs int64) error
 	RecordFailure(ctx context.Context, id int64, statusCode int, latencyMs int64, maxNotifications int, failureThreshold int) (storage.Endpoint, error)
 	RecordRecovery(ctx context.Context, id int64, statusCode int, latencyMs int64) (storage.Endpoint, error)
+	ListExpiredPauses(ctx context.Context, now time.Time) ([]storage.Endpoint, error)
+	SetEndpointPaused(ctx context.Context, id int64, paused bool, until sql.NullTime) error
+	SetAlertMessageID(ctx context.Context, id int64, messageID int64) error
+	TouchLastNotified(ctx context.Context, id int64) error
 }
 
 // Checker performs HTTP health checks.
@@ -25,8 +30,10 @@ type Checker interface {
 }
 
 // Notifier sends failure and recovery notifications.
+// NotifyFailure returns the ID of the sent alert message (0 if unavailable),
+// used to thread the recovery message as a reply.
 type Notifier interface {
-	NotifyFailure(ctx context.Context, endpoint storage.Endpoint) error
+	NotifyFailure(ctx context.Context, endpoint storage.Endpoint) (int64, error)
 	NotifyRecovery(ctx context.Context, endpoint storage.Endpoint, downtime time.Duration) error
 }
 
@@ -38,26 +45,42 @@ type Scheduler struct {
 	notifier                Notifier
 	maxFailureNotifications int
 	failureThreshold        int
+	reminderInterval        time.Duration
 	ctx                     context.Context
 }
 
 // NewScheduler creates a Scheduler. Call Start() to begin running jobs.
 // failureThreshold is how many consecutive failures must occur before the
-// first alert is sent (1 = alert on the first failure).
-func NewScheduler(ctx context.Context, store Store, checker Checker, notifier Notifier, maxFailureNotifications int, failureThreshold int) (*Scheduler, error) {
+// first alert is sent (1 = alert on the first failure). reminderInterval
+// controls "still down" re-alerts (0 = disabled).
+func NewScheduler(ctx context.Context, store Store, checker Checker, notifier Notifier, maxFailureNotifications int, failureThreshold int, reminderInterval time.Duration) (*Scheduler, error) {
 	cron, err := gocron.NewScheduler()
 	if err != nil {
 		return nil, fmt.Errorf("create gocron scheduler: %w", err)
 	}
-	return &Scheduler{
+	s := &Scheduler{
 		cron:                    cron,
 		store:                   store,
 		checker:                 checker,
 		notifier:                notifier,
 		maxFailureNotifications: maxFailureNotifications,
 		failureThreshold:        failureThreshold,
+		reminderInterval:        reminderInterval,
 		ctx:                     ctx,
-	}, nil
+	}
+
+	// Periodic housekeeping: resume endpoints whose timed pause has expired.
+	_, err = cron.NewJob(
+		gocron.DurationJob(time.Minute),
+		gocron.NewTask(s.resumeExpiredPauses),
+		gocron.WithTags("internal-resume-expired"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("add resume-expired job: %w", err)
+	}
+
+	return s, nil
 }
 
 // Start begins running scheduled jobs.
@@ -128,8 +151,24 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 				"id", endpointID, "name", ep.Name, "url", ep.URL,
 				"status_code", statusCode, "duration_ms", latencyMs,
 				"consecutive_failures", updated.ConsecutiveFailures)
-			if err := s.notifier.NotifyFailure(ctx, updated); err != nil {
+			msgID, err := s.notifier.NotifyFailure(ctx, updated)
+			if err != nil {
 				slog.Error("scheduler: notify failure", "id", endpointID, "error", err)
+			} else if msgID > 0 {
+				if err := s.store.SetAlertMessageID(ctx, endpointID, msgID); err != nil {
+					slog.Error("scheduler: set alert message id", "id", endpointID, "error", err)
+				}
+			}
+		} else if s.reminderInterval > 0 && updated.LastNotifiedAt.Valid &&
+			time.Since(updated.LastNotifiedAt.Time) >= s.reminderInterval {
+			// Cap reached but the outage continues — send a reminder.
+			slog.Info("scheduler: endpoint still down",
+				"id", endpointID, "name", ep.Name, "url", ep.URL,
+				"status_code", statusCode, "consecutive_failures", updated.ConsecutiveFailures)
+			if _, err := s.notifier.NotifyFailure(ctx, updated); err != nil {
+				slog.Error("scheduler: notify reminder", "id", endpointID, "error", err)
+			} else if err := s.store.TouchLastNotified(ctx, endpointID); err != nil {
+				slog.Error("scheduler: touch last notified", "id", endpointID, "error", err)
 			}
 		} else {
 			// Below the alert threshold or past the notification cap — log at
@@ -204,4 +243,30 @@ func (s *Scheduler) CheckNow(ctx context.Context, endpointID int64) (storage.End
 	}
 
 	return s.store.GetEndpoint(ctx, endpointID)
+}
+
+// resumeExpiredPauses unpauses endpoints whose timed pause has elapsed and
+// restarts their monitoring jobs.
+func (s *Scheduler) resumeExpiredPauses() {
+	ctx := s.ctx
+
+	expired, err := s.store.ListExpiredPauses(ctx, time.Now().UTC())
+	if err != nil {
+		slog.Error("scheduler: list expired pauses", "error", err)
+		return
+	}
+
+	for _, ep := range expired {
+		if err := s.store.SetEndpointPaused(ctx, ep.ID, false, sql.NullTime{}); err != nil {
+			slog.Error("scheduler: resume endpoint", "id", ep.ID, "error", err)
+			continue
+		}
+		ep.Paused = false
+		ep.PausedUntil = sql.NullTime{}
+		if err := s.Add(ctx, ep); err != nil {
+			slog.Error("scheduler: restart job after pause", "id", ep.ID, "error", err)
+			continue
+		}
+		slog.Info("scheduler: timed pause ended", "id", ep.ID, "name", ep.Name)
+	}
 }

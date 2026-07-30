@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"time"
@@ -20,7 +21,7 @@ type Store interface {
 	DeleteEndpoint(ctx context.Context, id int64) error
 	ListEndpoints(ctx context.Context) ([]storage.Endpoint, error)
 	UpdateEndpointInterval(ctx context.Context, id int64, intervalSeconds int) error
-	SetEndpointPaused(ctx context.Context, id int64, paused bool) error
+	SetEndpointPaused(ctx context.Context, id int64, paused bool, until sql.NullTime) error
 }
 
 // Scheduler defines the scheduling methods the bot needs.
@@ -37,16 +38,18 @@ type Checker interface {
 
 // Bot wraps the Telegram bot with application logic.
 type Bot struct {
-	bot       *tele.Bot
-	store     Store
-	scheduler Scheduler
-	checker   Checker
-	chatID    int64
-	rootCtx   context.Context
+	bot             *tele.Bot
+	store           Store
+	scheduler       Scheduler
+	checker         Checker
+	chatID          int64
+	slowThresholdMs int64
+	rootCtx         context.Context
 }
 
 // NewBot creates a Bot. SetScheduler must be called before Start.
-func NewBot(token string, chatID int64, store Store, checker Checker, rootCtx context.Context) (*Bot, error) {
+// slowThresholdMs marks healthy endpoints as "slow" above this latency (0 = disabled).
+func NewBot(token string, chatID int64, store Store, checker Checker, slowThresholdMs int64, rootCtx context.Context) (*Bot, error) {
 	pref := tele.Settings{
 		Token:     token,
 		Poller:    &tele.LongPoller{Timeout: 10 * time.Second},
@@ -59,11 +62,12 @@ func NewBot(token string, chatID int64, store Store, checker Checker, rootCtx co
 	}
 
 	b := &Bot{
-		bot:     tb,
-		store:   store,
-		checker: checker,
-		chatID:  chatID,
-		rootCtx: rootCtx,
+		bot:             tb,
+		store:           store,
+		checker:         checker,
+		chatID:          chatID,
+		slowThresholdMs: slowThresholdMs,
+		rootCtx:         rootCtx,
 	}
 
 	b.registerHandlers()
@@ -117,28 +121,30 @@ func (b *Bot) guarded(h tele.HandlerFunc) tele.HandlerFunc {
 	}
 }
 
-// SendMessage sends a text message to the configured chat ID.
+// SendMessage sends a text message to the configured chat ID and returns the
+// sent message (its ID is used to thread the recovery as a reply).
 // markup is optional and may be nil.
-func (b *Bot) SendMessage(text string, markup *tele.ReplyMarkup) error {
-	chat := &tele.Chat{ID: b.chatID}
-	opts := []interface{}{tele.NoPreview}
-	if markup != nil {
-		opts = append(opts, markup)
-	}
-	_, err := b.bot.Send(chat, text, opts...)
+func (b *Bot) SendMessage(text string, markup *tele.ReplyMarkup) (*tele.Message, error) {
+	return b.send(text, markup, false, 0)
+}
+
+// SendSilentReply sends a message without notification sound, as a reply to
+// the given alert message when replyToID > 0. markup is optional and may be nil.
+func (b *Bot) SendSilentReply(text string, markup *tele.ReplyMarkup, replyToID int64) error {
+	_, err := b.send(text, markup, true, replyToID)
 	return err
 }
 
-// SendSilentMessage sends a text message without notification sound.
-// markup is optional and may be nil.
-func (b *Bot) SendSilentMessage(text string, markup *tele.ReplyMarkup) error {
-	chat := &tele.Chat{ID: b.chatID}
-	opts := []interface{}{tele.NoPreview, tele.Silent}
-	if markup != nil {
-		opts = append(opts, markup)
+func (b *Bot) send(text string, markup *tele.ReplyMarkup, silent bool, replyToID int64) (*tele.Message, error) {
+	opts := &tele.SendOptions{
+		DisableWebPagePreview: true,
+		DisableNotification:   silent,
+		ReplyMarkup:           markup,
 	}
-	_, err := b.bot.Send(chat, text, opts...)
-	return err
+	if replyToID > 0 {
+		opts.ReplyTo = &tele.Message{ID: int(replyToID)}
+	}
+	return b.bot.Send(&tele.Chat{ID: b.chatID}, text, opts)
 }
 
 // TelegramNotifier implements monitor.Notifier using the bot.
@@ -154,18 +160,27 @@ func NewTelegramNotifier(bot *Bot, maxFail int) *TelegramNotifier {
 
 // NotifyFailure sends a failure notification to the configured chat.
 // The alert carries action buttons: check now, pause, detail.
-func (n *TelegramNotifier) NotifyFailure(ctx context.Context, ep storage.Endpoint) error {
+// Returns the sent message ID so the recovery can be threaded as a reply.
+func (n *TelegramNotifier) NotifyFailure(ctx context.Context, ep storage.Endpoint) (int64, error) {
 	var msg string
 	if ep.LastStatusCode > 0 {
 		msg = FormatFailureWithCode(ep, ep.LastStatusCode, n.maxFail)
 	} else {
 		msg = FormatFailure(ep, n.maxFail)
 	}
-	return n.bot.SendMessage(msg, AlertKeyboard(ep))
+	m, err := n.bot.SendMessage(msg, AlertKeyboard(ep))
+	if err != nil {
+		return 0, err
+	}
+	if m == nil {
+		return 0, nil
+	}
+	return int64(m.ID), nil
 }
 
-// NotifyRecovery sends a silent recovery notification to the configured chat.
+// NotifyRecovery sends a silent recovery notification to the configured chat,
+// threaded as a reply to the original failure alert when available.
 func (n *TelegramNotifier) NotifyRecovery(ctx context.Context, ep storage.Endpoint, downtime time.Duration) error {
 	msg := FormatRecovery(ep, downtime)
-	return n.bot.SendSilentMessage(msg, RecoveryKeyboard(ep))
+	return n.bot.SendSilentReply(msg, RecoveryKeyboard(ep), ep.AlertMessageID)
 }

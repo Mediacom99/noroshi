@@ -15,6 +15,8 @@ type Config struct {
 	HTTPTimeout             time.Duration
 	MaxFailureNotifications int
 	FailureThreshold        int
+	SlowThresholdMs         int64
+	ReminderInterval        time.Duration
 	LogLevel                string
 	HealthPort              int
 }
@@ -70,6 +72,28 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("FAILURE_THRESHOLD must be at least 1")
 	}
 
+	var slowThresholdMs int64
+	if v := os.Getenv("SLOW_THRESHOLD_MS"); v != "" {
+		slowThresholdMs, err = strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("SLOW_THRESHOLD_MS must be a valid integer: %w", err)
+		}
+		if slowThresholdMs < 0 {
+			return nil, fmt.Errorf("SLOW_THRESHOLD_MS must not be negative")
+		}
+	}
+
+	var reminderInterval time.Duration
+	if v := os.Getenv("REMINDER_INTERVAL"); v != "" {
+		reminderInterval, err = time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("REMINDER_INTERVAL must be a valid duration: %w", err)
+		}
+		if reminderInterval < 0 {
+			return nil, fmt.Errorf("REMINDER_INTERVAL must not be negative")
+		}
+	}
+
 	logLevel := os.Getenv("LOG_LEVEL")
 	if logLevel == "" {
 		logLevel = "info"
@@ -90,6 +114,8 @@ func Load() (*Config, error) {
 		HTTPTimeout:             httpTimeout,
 		MaxFailureNotifications: maxFailures,
 		FailureThreshold:        failureThreshold,
+		SlowThresholdMs:         slowThresholdMs,
+		ReminderInterval:        reminderInterval,
 		LogLevel:                logLevel,
 		HealthPort:              healthPort,
 	}, nil

@@ -62,6 +62,7 @@ func (m *mockStore) RecordFailure(_ context.Context, id int64, _ int, _ int64, m
 	ep.ConsecutiveFailures++
 	if ep.FailureNotificationsSent < maxNotifications && ep.ConsecutiveFailures >= failureThreshold {
 		ep.FailureNotificationsSent++
+		ep.LastNotifiedAt = sql.NullTime{Time: time.Now(), Valid: true}
 	}
 	ep.Status = "not_ok"
 	if ep.ConsecutiveFailures == 1 {
@@ -90,6 +91,55 @@ func (m *mockStore) RecordRecovery(_ context.Context, id int64, _ int, _ int64) 
 	return result, nil
 }
 
+func (m *mockStore) ListExpiredPauses(_ context.Context, now time.Time) ([]storage.Endpoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []storage.Endpoint
+	for _, ep := range m.endpoints {
+		if ep.Paused && ep.PausedUntil.Valid && !ep.PausedUntil.Time.After(now) {
+			out = append(out, ep)
+		}
+	}
+	return out, nil
+}
+
+func (m *mockStore) SetEndpointPaused(_ context.Context, id int64, paused bool, until sql.NullTime) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ep, ok := m.endpoints[id]
+	if !ok {
+		return &notFoundError{}
+	}
+	ep.Paused = paused
+	ep.PausedUntil = until
+	m.endpoints[id] = ep
+	return nil
+}
+
+func (m *mockStore) SetAlertMessageID(_ context.Context, id int64, messageID int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ep, ok := m.endpoints[id]
+	if !ok {
+		return &notFoundError{}
+	}
+	ep.AlertMessageID = messageID
+	m.endpoints[id] = ep
+	return nil
+}
+
+func (m *mockStore) TouchLastNotified(_ context.Context, id int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ep, ok := m.endpoints[id]
+	if !ok {
+		return &notFoundError{}
+	}
+	ep.LastNotifiedAt = sql.NullTime{Time: time.Now(), Valid: true}
+	m.endpoints[id] = ep
+	return nil
+}
+
 type notFoundError struct{}
 
 func (e *notFoundError) Error() string { return "not found" }
@@ -106,11 +156,11 @@ type recoveryCall struct {
 	Downtime time.Duration
 }
 
-func (n *mockNotifier) NotifyFailure(_ context.Context, ep storage.Endpoint) error {
+func (n *mockNotifier) NotifyFailure(_ context.Context, ep storage.Endpoint) (int64, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.failures = append(n.failures, ep)
-	return nil
+	return int64(len(n.failures)), nil
 }
 
 func (n *mockNotifier) NotifyRecovery(_ context.Context, ep storage.Endpoint, downtime time.Duration) error {
@@ -143,7 +193,7 @@ func (m *mockChecker) Check(ctx context.Context, url string) (int, time.Duration
 
 func newMockScheduler(t *testing.T, store *mockStore, checker *mockChecker, notifier *mockNotifier, maxFail int) *Scheduler {
 	t.Helper()
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxFail, 1)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxFail, 1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +324,7 @@ func TestCheckAndNotifyOK(t *testing.T) {
 	notifier := &mockNotifier{}
 	checker := NewHTTPChecker(5 * time.Second)
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +355,7 @@ func TestCheckAndNotifyFailure(t *testing.T) {
 	notifier := &mockNotifier{}
 	checker := NewHTTPChecker(5 * time.Second)
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +379,7 @@ func TestCheckAndNotifyFailureCap(t *testing.T) {
 	checker := NewHTTPChecker(5 * time.Second)
 
 	maxNotifications := 3
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxNotifications, 1)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxNotifications, 1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +409,7 @@ func TestCheckAndNotifyRecovery(t *testing.T) {
 	notifier := &mockNotifier{}
 	checker := NewHTTPChecker(5 * time.Second)
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +435,7 @@ func TestCheckAndNotifyNoRecoveryWhenAlreadyOK(t *testing.T) {
 	notifier := &mockNotifier{}
 	checker := NewHTTPChecker(5 * time.Second)
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +606,7 @@ func TestCheckAndNotifyFailureThreshold(t *testing.T) {
 		},
 	}
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 3)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 3, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,5 +660,106 @@ func TestCheckAndNotifyPaused(t *testing.T) {
 	ep, _ := store.GetEndpoint(context.Background(), 1)
 	if ep.ConsecutiveFailures != 0 {
 		t.Error("paused endpoint must not record failures")
+	}
+}
+
+func TestCheckAndNotifyReminder(t *testing.T) {
+	store := newMockStore()
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
+	notifier := &mockNotifier{}
+	checker := &mockChecker{
+		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
+			return 500, 10 * time.Millisecond, nil
+		},
+	}
+
+	// max 1 notification, reminder every nanosecond (fires on next check).
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 1, 1, time.Nanosecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sched.checkAndNotify(1) // first alert (cap reached)
+	if notifier.failureCount() != 1 {
+		t.Fatalf("failure notifications = %d, want 1", notifier.failureCount())
+	}
+
+	sched.checkAndNotify(1) // cap reached → reminder
+	if notifier.failureCount() != 2 {
+		t.Errorf("failure notifications = %d, want 2 (reminder sent)", notifier.failureCount())
+	}
+}
+
+func TestCheckAndNotifyNoReminderWhenDisabled(t *testing.T) {
+	store := newMockStore()
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
+	notifier := &mockNotifier{}
+	checker := &mockChecker{
+		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
+			return 500, 10 * time.Millisecond, nil
+		},
+	}
+
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 1, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 3 {
+		sched.checkAndNotify(1)
+	}
+	if notifier.failureCount() != 1 {
+		t.Errorf("failure notifications = %d, want 1 (reminders disabled)", notifier.failureCount())
+	}
+}
+
+func TestCheckAndNotifyStoresAlertMessageID(t *testing.T) {
+	store := newMockStore()
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
+	notifier := &mockNotifier{}
+	checker := &mockChecker{
+		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
+			return 500, 10 * time.Millisecond, nil
+		},
+	}
+
+	sched := newMockScheduler(t, store, checker, notifier, 3)
+	sched.checkAndNotify(1)
+
+	ep, _ := store.GetEndpoint(context.Background(), 1)
+	if ep.AlertMessageID == 0 {
+		t.Error("AlertMessageID should be stored after a failure notification")
+	}
+}
+
+func TestResumeExpiredPauses(t *testing.T) {
+	store := newMockStore()
+	store.SetEndpoint(storage.Endpoint{
+		ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok",
+		Paused:      true,
+		PausedUntil: sql.NullTime{Time: time.Now().Add(-time.Minute), Valid: true},
+	})
+	store.SetEndpoint(storage.Endpoint{
+		ID: 2, URL: "https://other.example.com", IntervalSeconds: 30, Status: "ok",
+		Paused:      true,
+		PausedUntil: sql.NullTime{Time: time.Now().Add(time.Hour), Valid: true},
+	})
+	notifier := &mockNotifier{}
+	checker := &mockChecker{
+		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
+			return 200, 10 * time.Millisecond, nil
+		},
+	}
+
+	sched := newMockScheduler(t, store, checker, notifier, 3)
+	sched.resumeExpiredPauses()
+
+	ep1, _ := store.GetEndpoint(context.Background(), 1)
+	if ep1.Paused {
+		t.Error("endpoint 1 should have been resumed (expired pause)")
+	}
+	ep2, _ := store.GetEndpoint(context.Background(), 2)
+	if !ep2.Paused {
+		t.Error("endpoint 2 should still be paused (not yet expired)")
 	}
 }

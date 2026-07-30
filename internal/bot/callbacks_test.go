@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -829,7 +830,7 @@ func TestHandlePauseCallback(t *testing.T) {
 		getEndpointFn: func(_ context.Context, id int64) (storage.Endpoint, error) {
 			return ep, nil
 		},
-		setEndpointPausedFn: func(_ context.Context, _ int64, paused bool) error {
+		setEndpointPausedFn: func(_ context.Context, _ int64, paused bool, _ sql.NullTime) error {
 			pausedSet = paused
 			return nil
 		},

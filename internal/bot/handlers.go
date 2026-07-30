@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -152,7 +153,7 @@ func (b *Bot) handleStatus(c tele.Context) error {
 		wg.Wait()
 	}
 
-	return c.Send(FormatStatus(endpoints), tele.NoPreview)
+	return c.Send(FormatStatus(endpoints, b.slowThresholdMs), tele.NoPreview)
 }
 
 func (b *Bot) sendEndpointList(c tele.Context) error {
@@ -162,7 +163,7 @@ func (b *Bot) sendEndpointList(c tele.Context) error {
 		return c.Send("Internal error. Please try again.")
 	}
 
-	text, markup := FormatEndpointList(endpoints)
+	text, markup := FormatEndpointList(endpoints, b.slowThresholdMs)
 	if markup == nil {
 		return c.Send(text)
 	}
@@ -246,16 +247,19 @@ func (b *Bot) handleResume(c tele.Context) error {
 }
 
 func (b *Bot) handlePauseResume(c tele.Context, pause bool) error {
-	arg := strings.TrimSpace(c.Message().Payload)
+	args := strings.Fields(c.Message().Payload)
 	verb := "resume"
 	if pause {
 		verb = "pause"
 	}
-	if arg == "" {
-		return c.Send(fmt.Sprintf("Usage: /%s <code>&lt;name or id&gt;</code>", verb))
+	if len(args) == 0 {
+		if pause {
+			return c.Send("Usage: /pause <code>&lt;name or id&gt; [duration]</code>\nExample: /pause prod-api 2h")
+		}
+		return c.Send("Usage: /resume <code>&lt;name or id&gt;</code>")
 	}
 
-	ep, err := b.findEndpoint(arg)
+	ep, err := b.findEndpoint(args[0])
 	if err != nil {
 		if errors.Is(err, apperror.ErrNotFound) {
 			return c.Send("Endpoint not found.")
@@ -264,25 +268,38 @@ func (b *Bot) handlePauseResume(c tele.Context, pause bool) error {
 		return c.Send("Internal error. Please try again.")
 	}
 
-	if ep.Paused == pause {
+	var until sql.NullTime
+	if pause && len(args) >= 2 {
+		d, err := time.ParseDuration(args[1])
+		if err != nil || d <= 0 {
+			return c.Send("Invalid duration. Use format like 30m, 2h, 24h")
+		}
+		until = sql.NullTime{Time: time.Now().UTC().Add(d), Valid: true}
+	}
+
+	if ep.Paused == pause && !until.Valid {
 		return c.Send(fmt.Sprintf("%s is already %sd.", htmlEscape(ep.Name), verb))
 	}
 
-	if err := b.setPaused(ep, pause); err != nil {
+	if err := b.setPaused(ep, pause, until); err != nil {
 		slog.Error("set paused", "id", ep.ID, "paused", pause, "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 
 	if pause {
+		if until.Valid {
+			return c.Send(fmt.Sprintf("⏸ <b>Paused</b> %s for %s — resumes automatically.", htmlEscape(ep.Name), FormatDuration(time.Until(until.Time))))
+		}
 		return c.Send(fmt.Sprintf("⏸ <b>Paused</b> %s — no more checks until resumed.", htmlEscape(ep.Name)))
 	}
 	return c.Send(fmt.Sprintf("▶️ <b>Resumed</b> %s — monitoring restarted.", htmlEscape(ep.Name)))
 }
 
 // setPaused persists the paused flag and adds/removes the scheduler job.
+// until is the optional auto-resume time (zero Valid = indefinite pause).
 // On scheduler failure during resume, the store update is rolled back.
-func (b *Bot) setPaused(ep storage.Endpoint, pause bool) error {
-	if err := b.store.SetEndpointPaused(b.rootCtx, ep.ID, pause); err != nil {
+func (b *Bot) setPaused(ep storage.Endpoint, pause bool, until sql.NullTime) error {
+	if err := b.store.SetEndpointPaused(b.rootCtx, ep.ID, pause, until); err != nil {
 		return err
 	}
 
@@ -296,7 +313,7 @@ func (b *Bot) setPaused(ep storage.Endpoint, pause bool) error {
 	}
 
 	if err := b.scheduler.Add(b.rootCtx, ep); err != nil {
-		if rbErr := b.store.SetEndpointPaused(b.rootCtx, ep.ID, true); rbErr != nil {
+		if rbErr := b.store.SetEndpointPaused(b.rootCtx, ep.ID, true, sql.NullTime{}); rbErr != nil {
 			slog.Error("rollback pause", "id", ep.ID, "error", rbErr)
 		}
 		return err

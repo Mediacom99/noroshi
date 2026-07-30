@@ -11,7 +11,9 @@ A self-contained uptime monitor in Go that uses a Telegram bot as its only inter
 - **Telegram bot UI** — manage endpoints entirely from a Telegram chat, with inline keyboards for details, interval changes, and confirmed deletes
 - **Reliable checks** — automatic retries on 5xx and connection errors (via retryablehttp), so transient network blips don't page you; any 2xx counts as up
 - **Sensible alerting** — alerts start after a configurable failure threshold and stop after N consecutive failures; recovery alerts include downtime duration
-- **Pause/resume** — silence an endpoint during maintenance without deleting it
+- **Pause/resume** — silence an endpoint during maintenance, optionally with auto-resume (`/pause prod-api 2h`)
+- **Actionable, threaded alerts** — failure alerts carry check-now/pause/detail buttons; the recovery arrives as a reply to the original alert
+- **Slow-endpoint detection** — optional 🟡 degraded state when latency exceeds a threshold
 - **On-demand checks** — `/status` probes all endpoints immediately and reports HTTP code and latency
 - **SQLite persistence** — endpoints survive restarts; pure-Go driver, no CGO
 - **Single container** — multi-arch image (`linux/amd64`, `linux/arm64`) published to GHCR, `/healthz` endpoint for orchestrators
@@ -57,7 +59,7 @@ CGO_ENABLED=0 go build ./cmd/monitor/
 | `/add <name> <url> [interval]` | Add endpoint, e.g. `/add prod-api https://example.com 30s` (default interval: `1m`) |
 | `/delete <name or id>` | Remove endpoint from monitoring |
 | `/interval <name or id> <interval>` | Change check interval |
-| `/pause <name or id>` | Stop checks and alerts, keep the endpoint configured |
+| `/pause <name or id> [duration]` | Stop checks and alerts, keep the endpoint configured (auto-resumes if a duration is given, e.g. `/pause prod-api 2h`) |
 | `/resume <name or id>` | Resume a paused endpoint |
 | `/list` | Dashboard of all endpoints with inline action buttons (check now, pause, interval, delete) |
 | `/status` | Check all endpoints right now and show HTTP code + latency |
@@ -77,6 +79,8 @@ CGO_ENABLED=0 go build ./cmd/monitor/
 | `HTTP_TIMEOUT` | No | `10s` | Health check HTTP timeout |
 | `MAX_FAILURE_NOTIFICATIONS` | No | `3` | Stop alerting after N consecutive failures |
 | `FAILURE_THRESHOLD` | No | `1` | Consecutive failures before the first alert |
+| `REMINDER_INTERVAL` | No | `0` (off) | Re-alert every interval while an outage continues (e.g. `2h`) |
+| `SLOW_THRESHOLD_MS` | No | `0` (off) | Mark healthy endpoints as 🟡 slow above this latency |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, `error` |
 | `HEALTH_PORT` | No | `8080` | Port for the `/healthz` HTTP endpoint |
 

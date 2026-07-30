@@ -42,7 +42,8 @@ These are the ONLY external dependencies. NEVER add others without explicit appr
 - Any HTTP 2xx status counts as UP; everything else (3xx, 4xx, 5xx, connection errors) is DOWN.
 - gocron jobs MUST use `gocron.WithSingletonMode(gocron.LimitModeReschedule)` — checks for the same endpoint must never overlap.
 - Alerts start only after `FAILURE_THRESHOLD` consecutive failures (default 1) and stop after `MAX_FAILURE_NOTIFICATIONS` (default 3). `failure_notifications_sent` only counts failures at/beyond the threshold and is capped in `RecordFailure`; notify only when the counter actually increments.
-- Paused endpoints (`paused` column, migration 005) have no gocron job and are never checked — not at startup, not by `checkAndNotify`, not by `CheckNow`.
+- Paused endpoints (`paused` column, migration 005) have no gocron job and are never checked — not at startup, not by `checkAndNotify`, not by `CheckNow`. Timed pauses set `paused_until` and auto-resume via a per-minute housekeeping job.
+- `REMINDER_INTERVAL` (default off) re-alerts ongoing outages; `SLOW_THRESHOLD_MS` (default off) renders healthy-but-slow endpoints as 🟡. Both are display/notification-only — the up/down rule is unchanged.
 - Ad-hoc checks (`/status`, "Check now" button → `Scheduler.CheckNow`) never touch failure counters and never send notifications.
 
 ## Code Style

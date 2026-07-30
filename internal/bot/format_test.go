@@ -106,7 +106,7 @@ func TestFormatRecovery(t *testing.T) {
 }
 
 func TestFormatEndpointListEmpty(t *testing.T) {
-	text, markup := FormatEndpointList(nil)
+	text, markup := FormatEndpointList(nil, 0)
 	if !strings.Contains(text, "No endpoints") {
 		t.Errorf("got %q, want empty message", text)
 	}
@@ -127,7 +127,7 @@ func TestFormatEndpointListSingle(t *testing.T) {
 		},
 	}
 
-	text, markup := FormatEndpointList(eps)
+	text, markup := FormatEndpointList(eps, 0)
 
 	if !strings.Contains(text, "1/1 healthy") {
 		t.Error("should contain healthy summary")
@@ -155,7 +155,7 @@ func TestFormatEndpointListMultiple(t *testing.T) {
 		{ID: 2, Name: "site-b", URL: "https://b.com", IntervalSeconds: 60, Status: "not_ok", ConsecutiveFailures: 3},
 	}
 
-	text, markup := FormatEndpointList(eps)
+	text, markup := FormatEndpointList(eps, 0)
 
 	if !strings.Contains(text, "1/2 healthy") {
 		t.Error("should contain healthy summary")
@@ -181,7 +181,7 @@ func TestFormatEndpointDetail(t *testing.T) {
 		LastCheckedAt:       sql.NullTime{Time: time.Date(2026, 3, 13, 14, 32, 5, 0, time.UTC), Valid: true},
 	}
 
-	text, markup := FormatEndpointDetail(ep)
+	text, markup := FormatEndpointDetail(ep, 0)
 
 	checks := []struct {
 		label    string
@@ -222,7 +222,7 @@ func TestFormatEndpointDetailNoStatusCode(t *testing.T) {
 		LastCheckedAt:       sql.NullTime{Time: time.Date(2026, 3, 13, 14, 32, 5, 0, time.UTC), Valid: true},
 	}
 
-	text, _ := FormatEndpointDetail(ep)
+	text, _ := FormatEndpointDetail(ep, 0)
 
 	if strings.Contains(text, "<b>HTTP:</b>") {
 		t.Error("should not show HTTP status line when LastStatusCode is 0")
@@ -238,7 +238,7 @@ func TestFormatEndpointDetailNeverChecked(t *testing.T) {
 		Status:          "unknown",
 	}
 
-	text, _ := FormatEndpointDetail(ep)
+	text, _ := FormatEndpointDetail(ep, 0)
 
 	if !strings.Contains(text, "never") {
 		t.Error("should show never for unchecked endpoint")
@@ -331,7 +331,7 @@ func TestFormatEndpointListMixed(t *testing.T) {
 		{ID: 4, Name: "new-ep", URL: "https://d.com", Status: "unknown"},
 	}
 
-	text, _ := FormatEndpointList(eps)
+	text, _ := FormatEndpointList(eps, 0)
 
 	for _, want := range []string{"1/4 healthy", "1 down", "1 paused", "1 pending", "42ms", "HTTP 503", "paused", "pending"} {
 		if !strings.Contains(text, want) {
@@ -343,12 +343,55 @@ func TestFormatEndpointListMixed(t *testing.T) {
 func TestFormatEndpointDetailPaused(t *testing.T) {
 	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", IntervalSeconds: 30, Status: "ok", Paused: true}
 
-	text, markup := FormatEndpointDetail(ep)
+	text, markup := FormatEndpointDetail(ep, 0)
 
 	if !strings.Contains(text, "monitoring paused") {
 		t.Errorf("detail should show paused state, got: %s", text)
 	}
 	if !strings.Contains(markup.InlineKeyboard[0][1].Text, "Resume") {
 		t.Errorf("pause button should become Resume, got %q", markup.InlineKeyboard[0][1].Text)
+	}
+}
+
+func TestSlowDisplay(t *testing.T) {
+	ep := storage.Endpoint{
+		ID: 1, Name: "slow-api", URL: "https://slow.com", IntervalSeconds: 30,
+		Status: "ok", LastStatusCode: 200, LastLatencyMs: 2500,
+		LastCheckedAt: sql.NullTime{Time: time.Now(), Valid: true},
+	}
+
+	line := endpointLine(ep, 1000)
+	if !strings.Contains(line, "🟡") || !strings.Contains(line, "(slow)") {
+		t.Errorf("slow endpoint should show 🟡 and (slow), got: %s", line)
+	}
+
+	// Below threshold: normal green.
+	line = endpointLine(ep, 5000)
+	if !strings.Contains(line, "🟢") {
+		t.Errorf("fast endpoint should show 🟢, got: %s", line)
+	}
+
+	// Disabled threshold: always green.
+	line = endpointLine(ep, 0)
+	if !strings.Contains(line, "🟢") {
+		t.Errorf("disabled threshold should show 🟢, got: %s", line)
+	}
+
+	text, _ := FormatEndpointDetail(ep, 1000)
+	if !strings.Contains(text, "ok (slow)") {
+		t.Errorf("detail should show slow status, got: %s", text)
+	}
+}
+
+func TestFormatEndpointDetailTimedPause(t *testing.T) {
+	ep := storage.Endpoint{
+		ID: 1, Name: "prod-api", URL: "https://example.com", IntervalSeconds: 30,
+		Status: "ok", Paused: true,
+		PausedUntil: sql.NullTime{Time: time.Now().Add(90 * time.Minute), Valid: true},
+	}
+
+	text, _ := FormatEndpointDetail(ep, 0)
+	if !strings.Contains(text, "paused ·") || !strings.Contains(text, "left") {
+		t.Errorf("detail should show pause countdown, got: %s", text)
 	}
 }

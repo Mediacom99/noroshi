@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -34,7 +35,7 @@ func (b *Bot) handleDetailCallback(c tele.Context) error {
 		return c.Respond(&tele.CallbackResponse{Text: "Endpoint not found."})
 	}
 
-	text, markup := FormatEndpointDetail(ep)
+	text, markup := FormatEndpointDetail(ep, b.slowThresholdMs)
 	_ = c.Edit(text, markup, tele.NoPreview)
 	return c.Respond()
 }
@@ -196,7 +197,7 @@ func (b *Bot) handleCheckNowCallback(c tele.Context) error {
 		return c.Respond(&tele.CallbackResponse{Text: "Error running check."})
 	}
 
-	text, markup := FormatEndpointDetail(updated)
+	text, markup := FormatEndpointDetail(updated, b.slowThresholdMs)
 	_ = c.Edit(text, markup, tele.NoPreview)
 	return nil
 }
@@ -213,7 +214,7 @@ func (b *Bot) handlePauseCallback(c tele.Context) error {
 		return c.Respond(&tele.CallbackResponse{Text: "Endpoint not found."})
 	}
 
-	if err := b.setPaused(ep, !ep.Paused); err != nil {
+	if err := b.setPaused(ep, !ep.Paused, sql.NullTime{}); err != nil {
 		slog.Error("set paused", "id", ep.ID, "paused", !ep.Paused, "error", err)
 		return c.Respond(&tele.CallbackResponse{Text: "Error updating endpoint."})
 	}
@@ -225,7 +226,7 @@ func (b *Bot) handlePauseCallback(c tele.Context) error {
 	_ = c.Respond(&tele.CallbackResponse{Text: label})
 
 	ep.Paused = !ep.Paused
-	text, markup := FormatEndpointDetail(ep)
+	text, markup := FormatEndpointDetail(ep, b.slowThresholdMs)
 	_ = c.Edit(text, markup, tele.NoPreview)
 	return nil
 }
@@ -238,7 +239,7 @@ func (b *Bot) editEndpointList(c tele.Context) error {
 		return c.Edit("Internal error. Please try again.")
 	}
 
-	text, markup := FormatEndpointList(endpoints)
+	text, markup := FormatEndpointList(endpoints, b.slowThresholdMs)
 	if markup == nil {
 		return c.Edit(text)
 	}

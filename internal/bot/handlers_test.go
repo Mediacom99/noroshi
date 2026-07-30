@@ -2,9 +2,11 @@ package bot
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"noroshi/internal/apperror"
 	"noroshi/internal/storage"
@@ -684,7 +686,7 @@ func TestHandlePauseResume(t *testing.T) {
 				getEndpointByURLFn: func(_ context.Context, _ string) (storage.Endpoint, error) {
 					return storage.Endpoint{}, notFoundErr
 				},
-				setEndpointPausedFn: func(_ context.Context, _ int64, _ bool) error {
+				setEndpointPausedFn: func(_ context.Context, _ int64, _ bool, _ sql.NullTime) error {
 					storeCalled = true
 					return nil
 				},
@@ -753,5 +755,64 @@ func TestHandleIntervalPausedEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(mc.sentMessages[0], "Updated interval") {
 		t.Errorf("expected confirmation, got: %s", mc.sentMessages[0])
+	}
+}
+
+func TestHandlePauseWithDuration(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok"}
+
+	var untilSet sql.NullTime
+	store := &mockStore{
+		getEndpointByNameFn: func(_ context.Context, _ string) (storage.Endpoint, error) {
+			return ep, nil
+		},
+		setEndpointPausedFn: func(_ context.Context, _ int64, paused bool, until sql.NullTime) error {
+			untilSet = until
+			return nil
+		},
+	}
+	sched := &mockScheduler{}
+	b := newTestBot(store, sched)
+
+	mc := &mockContext{
+		messageFn: func() *tele.Message {
+			return &tele.Message{Payload: "prod-api 2h"}
+		},
+	}
+
+	if err := b.handlePause(mc); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if !untilSet.Valid {
+		t.Fatal("expected paused_until to be set for a timed pause")
+	}
+	if d := time.Until(untilSet.Time); d < time.Hour || d > 2*time.Hour {
+		t.Errorf("paused_until should be ~2h from now, got %v", d)
+	}
+	if !strings.Contains(mc.sentMessages[0], "resumes automatically") {
+		t.Errorf("expected timed-pause confirmation, got: %s", mc.sentMessages[0])
+	}
+}
+
+func TestHandlePauseInvalidDuration(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok"}
+	store := &mockStore{
+		getEndpointByNameFn: func(_ context.Context, _ string) (storage.Endpoint, error) {
+			return ep, nil
+		},
+	}
+	b := newTestBot(store, &mockScheduler{})
+
+	mc := &mockContext{
+		messageFn: func() *tele.Message {
+			return &tele.Message{Payload: "prod-api xyz"}
+		},
+	}
+
+	if err := b.handlePause(mc); err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if !strings.Contains(mc.sentMessages[0], "Invalid duration") {
+		t.Errorf("expected invalid-duration message, got: %s", mc.sentMessages[0])
 	}
 }

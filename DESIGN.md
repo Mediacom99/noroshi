@@ -28,7 +28,7 @@ noroshi/
 │   │   ├── scheduler.go                 # gocron scheduler, checkAndNotify, CheckNow
 │   │   └── *_test.go
 │   └── storage/
-│       ├── migrations/                  # goose migrations 001–005
+│       ├── migrations/                  # goose migrations 001–006
 │       ├── models.go                    # Endpoint struct
 │       ├── store.go                     # OpenDB, RunMigrations, SQLiteStore
 │       └── store_test.go
@@ -90,7 +90,7 @@ retryablehttp with `RetryMax=2`, `RetryWaitMin=500ms`, `RetryWaitMax=2s`, per-re
 
 **Success rule: any HTTP 2xx is UP.** Everything else — 3xx, 4xx, 5xx, connection error — is DOWN.
 
-## Database Schema (after migrations 001–005)
+## Database Schema (after migrations 001–006)
 
 ```sql
 CREATE TABLE endpoints (
@@ -106,12 +106,15 @@ CREATE TABLE endpoints (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_status_code INTEGER NOT NULL DEFAULT 0,   -- 003
     last_latency_ms INTEGER NOT NULL DEFAULT 0,    -- 004
-    paused INTEGER NOT NULL DEFAULT 0              -- 005
+    paused INTEGER NOT NULL DEFAULT 0,             -- 005
+    last_notified_at DATETIME,                     -- 006: drives REMINDER_INTERVAL re-alerts
+    paused_until DATETIME,                         -- 006: auto-resume time for timed pauses
+    alert_message_id INTEGER NOT NULL DEFAULT 0    -- 006: Telegram alert to thread recovery to
 );
 ```
 
 - `name` and `url` are both UNIQUE.
-- `paused` endpoints keep their row and config but have no gocron job; they are skipped at startup, in `checkAndNotify`, and in `CheckNow`.
+- `paused` endpoints keep their row and config but have no gocron job; they are skipped at startup, in `checkAndNotify`, and in `CheckNow`. A timed pause sets `paused_until`; a per-minute gocron housekeeping job (`resumeExpiredPauses`) resumes expired pauses.
 - `failure_notifications_sent` only counts failures at or beyond `FAILURE_THRESHOLD` and is capped at `MAX_FAILURE_NOTIFICATIONS` by `RecordFailure` — it always reflects notifications actually sent.
 - `last_failure_at` is set on the first failure of an outage and cleared on recovery; `RecordRecovery` returns the endpoint with the pre-reset value so downtime can be computed.
 - Connection string: `file:<path>?_journal_mode=WAL&_busy_timeout=5000`. Migrations embedded via `//go:embed migrations/*.sql` — never inline `CREATE TABLE` in Go.
@@ -137,6 +140,8 @@ The bot consumes Add/Get/GetByURL/GetByName/Delete/List/UpdateEndpointInterval (
 2. **DOWN** (error or non-2xx):
    - `RecordFailure` → increments `consecutive_failures`; increments `failure_notifications_sent` only once `consecutive_failures >= FAILURE_THRESHOLD`, capped at `MAX_FAILURE_NOTIFICATIONS`; sets `last_failure_at` on first failure.
    - Notify only when the counter actually increased (threshold reached, cap not yet hit). Alerting failures log at Info; sub-threshold/capped failures log at Debug.
+   - The alert's Telegram message ID is stored (`alert_message_id`); the recovery notification is sent as a reply to it (threaded alerts).
+   - If `REMINDER_INTERVAL` > 0 and the cap is reached but the outage continues, a reminder alert is re-sent once per interval (tracked via `last_notified_at`).
 3. **UP, previously down** (`status` not `ok`/`unknown`):
    - `RecordRecovery` → resets counters, returns old `last_failure_at`.
    - Send recovery notification with downtime **only if `last_failure_at` was set** — a `not_ok` status without it comes from an ad-hoc probe, not a tracked outage.
@@ -155,7 +160,7 @@ Performs a check and updates status/code/latency, but deliberately does NOT touc
 | `/add <name> <url> [interval]` | Validate name (1–50 chars, `[A-Za-z0-9_-]`, not all-numeric, no leading/trailing `-`) and URL (http/https, dotted host). Interval ≥ 10s, default `1m`. `ErrDuplicate` → friendly message. On scheduler failure → warning reply (monitored after restart). Reply includes immediate first-check result. |
 | `/delete <name or id>` | Lookup by ID → name → URL. Remove job, then delete row. |
 | `/interval <name or id> <interval>` | `updateInterval` helper: update DB, then remove+re-add job; on job failure roll back DB and restore the old job. |
-| `/pause <name or id>` / `/resume <name or id>` | `setPaused` helper: persist flag, remove/add job; resume failure rolls the flag back. Also available as an inline button in the detail view. |
+| `/pause <name or id> [duration]` / `/resume <name or id>` | `setPaused` helper: persist flag (+ optional `paused_until`), remove/add job; resume failure rolls the flag back. Also available as an inline button in the detail view. |
 | `/list` | Summary + per-endpoint lines, inline buttons (detail → interval presets / confirmed delete, refresh). |
 | `/status` | Concurrent `CheckNow` for all endpoints; reply with HTTP code + latency per endpoint. |
 | `/help` | Static help text. |

@@ -48,7 +48,7 @@ func main() {
 	checker := monitor.NewHTTPChecker(cfg.HTTPTimeout)
 
 	// Create bot (without scheduler — circular dependency resolution)
-	teleBot, err := bot.NewBot(cfg.TelegramToken, cfg.TelegramChatID, store, checker, ctx)
+	teleBot, err := bot.NewBot(cfg.TelegramToken, cfg.TelegramChatID, store, checker, cfg.SlowThresholdMs, ctx)
 	if err != nil {
 		slog.Error("create bot", "error", err)
 		os.Exit(1)
@@ -58,7 +58,7 @@ func main() {
 	notifier := bot.NewTelegramNotifier(teleBot, cfg.MaxFailureNotifications)
 
 	// Create scheduler with notifier
-	scheduler, err := monitor.NewScheduler(ctx, store, checker, notifier, cfg.MaxFailureNotifications, cfg.FailureThreshold)
+	scheduler, err := monitor.NewScheduler(ctx, store, checker, notifier, cfg.MaxFailureNotifications, cfg.FailureThreshold, cfg.ReminderInterval)
 	if err != nil {
 		slog.Error("create scheduler", "error", err)
 		os.Exit(1)

@@ -164,3 +164,49 @@ func TestLoadFailureThreshold(t *testing.T) {
 		t.Error("Load() should fail for MAX_FAILURE_NOTIFICATIONS < 1")
 	}
 }
+
+func TestLoadSlowThresholdAndReminder(t *testing.T) {
+	base := map[string]string{
+		"TELEGRAM_TOKEN":   "test-token",
+		"TELEGRAM_CHAT_ID": "-100123",
+	}
+
+	setEnv(t, base)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.SlowThresholdMs != 0 {
+		t.Errorf("SlowThresholdMs default = %d, want 0", cfg.SlowThresholdMs)
+	}
+	if cfg.ReminderInterval != 0 {
+		t.Errorf("ReminderInterval default = %v, want 0", cfg.ReminderInterval)
+	}
+
+	base["SLOW_THRESHOLD_MS"] = "2000"
+	base["REMINDER_INTERVAL"] = "2h"
+	setEnv(t, base)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.SlowThresholdMs != 2000 {
+		t.Errorf("SlowThresholdMs = %d, want 2000", cfg.SlowThresholdMs)
+	}
+	if cfg.ReminderInterval != 2*time.Hour {
+		t.Errorf("ReminderInterval = %v, want 2h", cfg.ReminderInterval)
+	}
+
+	base["SLOW_THRESHOLD_MS"] = "-5"
+	setEnv(t, base)
+	if _, err := Load(); err == nil {
+		t.Error("Load() should fail for negative SLOW_THRESHOLD_MS")
+	}
+
+	base["SLOW_THRESHOLD_MS"] = "2000"
+	base["REMINDER_INTERVAL"] = "banana"
+	setEnv(t, base)
+	if _, err := Load(); err == nil {
+		t.Error("Load() should fail for invalid REMINDER_INTERVAL")
+	}
+}

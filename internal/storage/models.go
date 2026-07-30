@@ -19,5 +19,8 @@ type Endpoint struct {
 	LastStatusCode           int
 	LastLatencyMs            int64
 	Paused                   bool
+	PausedUntil              sql.NullTime
+	LastNotifiedAt           sql.NullTime
+	AlertMessageID           int64
 	CreatedAt                time.Time
 }

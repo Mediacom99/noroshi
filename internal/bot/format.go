@@ -41,12 +41,31 @@ func statusEmoji(status string) string {
 	}
 }
 
-// displayEmoji returns the emoji for an endpoint, honoring the paused state.
-func displayEmoji(ep storage.Endpoint) string {
+// displayEmoji returns the emoji for an endpoint, honoring the paused state
+// and the slow-latency threshold (0 = disabled).
+func displayEmoji(ep storage.Endpoint, slowThresholdMs int64) string {
 	if ep.Paused {
 		return "⏸️"
 	}
+	if isSlow(ep, slowThresholdMs) {
+		return "🟡"
+	}
 	return statusEmoji(ep.Status)
+}
+
+// isSlow reports whether an up endpoint is responding above the latency threshold.
+func isSlow(ep storage.Endpoint, slowThresholdMs int64) bool {
+	return slowThresholdMs > 0 && ep.Status == "ok" &&
+		ep.LastCheckedAt.Valid && ep.LastLatencyMs > slowThresholdMs
+}
+
+// formatUntil renders a future timestamp as a countdown ("1h 30m left").
+func formatUntil(t time.Time) string {
+	d := time.Until(t)
+	if d <= 0 {
+		return "now"
+	}
+	return FormatDuration(d) + " left"
 }
 
 // FormatDuration produces human-readable duration: "2h 15m 30s", "12m 34s", "45s".
@@ -92,8 +111,8 @@ func formatCheckedAt(t time.Time) string {
 }
 
 // endpointLine renders one compact status line: "🟢 prod-api · 45ms".
-func endpointLine(ep storage.Endpoint) string {
-	line := fmt.Sprintf("%s <b>%s</b>", displayEmoji(ep), htmlEscape(ep.Name))
+func endpointLine(ep storage.Endpoint, slowThresholdMs int64) string {
+	line := fmt.Sprintf("%s <b>%s</b>", displayEmoji(ep, slowThresholdMs), htmlEscape(ep.Name))
 	switch {
 	case ep.Paused:
 		line += " · paused"
@@ -107,6 +126,9 @@ func endpointLine(ep storage.Endpoint) string {
 		line += " · pending"
 	default: // ok
 		line += fmt.Sprintf(" · %dms", ep.LastLatencyMs)
+		if isSlow(ep, slowThresholdMs) {
+			line += " (slow)"
+		}
 	}
 	return line
 }
@@ -191,7 +213,7 @@ func RecoveryKeyboard(ep storage.Endpoint) *tele.ReplyMarkup {
 
 // FormatEndpointList formats the dashboard overview.
 // Each endpoint gets one button — tap it to see details and actions.
-func FormatEndpointList(endpoints []storage.Endpoint) (string, *tele.ReplyMarkup) {
+func FormatEndpointList(endpoints []storage.Endpoint, slowThresholdMs int64) (string, *tele.ReplyMarkup) {
 	if len(endpoints) == 0 {
 		return "No endpoints are being monitored.\nUse /add to start monitoring.", nil
 	}
@@ -226,8 +248,8 @@ func FormatEndpointList(endpoints []storage.Endpoint) (string, *tele.ReplyMarkup
 	var rows []tele.Row
 	for _, ep := range endpoints {
 		id := strconv.FormatInt(ep.ID, 10)
-		fmt.Fprintf(&b, "\n%s", endpointLine(ep))
-		rows = append(rows, menu.Row(menu.Data(fmt.Sprintf("%s %s", displayEmoji(ep), ep.Name), cbDetail, id)))
+		fmt.Fprintf(&b, "\n%s", endpointLine(ep, slowThresholdMs))
+		rows = append(rows, menu.Row(menu.Data(fmt.Sprintf("%s %s", displayEmoji(ep, slowThresholdMs), ep.Name), cbDetail, id)))
 	}
 	rows = append(rows, menu.Row(menu.Data("🔄 Refresh", cbRefresh)))
 	menu.Inline(rows...)
@@ -236,7 +258,7 @@ func FormatEndpointList(endpoints []storage.Endpoint) (string, *tele.ReplyMarkup
 }
 
 // FormatStatus formats the result of an on-demand /status check.
-func FormatStatus(endpoints []storage.Endpoint) string {
+func FormatStatus(endpoints []storage.Endpoint, slowThresholdMs int64) string {
 	healthy := 0
 	for _, ep := range endpoints {
 		if ep.Status == "ok" {
@@ -247,7 +269,7 @@ func FormatStatus(endpoints []storage.Endpoint) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "📊 <b>Status check — %d/%d healthy</b>\n", healthy, len(endpoints))
 	for _, ep := range endpoints {
-		fmt.Fprintf(&b, "\n%s <b>%s</b>", displayEmoji(ep), htmlEscape(ep.Name))
+		fmt.Fprintf(&b, "\n%s <b>%s</b>", displayEmoji(ep, slowThresholdMs), htmlEscape(ep.Name))
 		switch {
 		case ep.Paused:
 			b.WriteString(" · paused")
@@ -263,18 +285,25 @@ func FormatStatus(endpoints []storage.Endpoint) string {
 }
 
 // FormatEndpointDetail formats a single endpoint's detail view with action buttons.
-func FormatEndpointDetail(ep storage.Endpoint) (string, *tele.ReplyMarkup) {
-	emoji := displayEmoji(ep)
+func FormatEndpointDetail(ep storage.Endpoint, slowThresholdMs int64) (string, *tele.ReplyMarkup) {
+	emoji := displayEmoji(ep, slowThresholdMs)
 	interval := FormatDuration(time.Duration(ep.IntervalSeconds) * time.Second)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s <b>%s</b>", emoji, htmlEscape(ep.Name))
 	if ep.Paused {
-		b.WriteString("  <i>(monitoring paused)</i>")
+		if ep.PausedUntil.Valid {
+			fmt.Fprintf(&b, "  <i>(paused · %s)</i>", formatUntil(ep.PausedUntil.Time))
+		} else {
+			b.WriteString("  <i>(monitoring paused)</i>")
+		}
 	}
 	fmt.Fprintf(&b, "\n\n<b>URL:</b> <code>%s</code>\n", htmlEscape(ep.URL))
 
 	fmt.Fprintf(&b, "<b>Status:</b> %s", ep.Status)
+	if isSlow(ep, slowThresholdMs) {
+		b.WriteString(" (slow)")
+	}
 	if ep.Status == "not_ok" && ep.ConsecutiveFailures > 0 {
 		fmt.Fprintf(&b, " (%d failures)", ep.ConsecutiveFailures)
 	}
