@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"noroshi/internal/apperror"
+	"noroshi/internal/monitor"
 	"noroshi/internal/storage"
 
 	tele "gopkg.in/telebot.v4"
@@ -24,6 +25,9 @@ func (b *Bot) registerHandlers() {
 	b.bot.Handle("/interval", b.guarded(b.handleInterval))
 	b.bot.Handle("/pause", b.guarded(b.handlePause))
 	b.bot.Handle("/resume", b.guarded(b.handleResume))
+	b.bot.Handle("/expect", b.guarded(b.handleExpect))
+	b.bot.Handle("/keyword", b.guarded(b.handleKeyword))
+	b.bot.Handle("/rename", b.guarded(b.handleRename))
 	b.bot.Handle("/help", b.guarded(b.handleHelp))
 
 	b.registerCallbacks()
@@ -77,14 +81,11 @@ func (b *Bot) handleAdd(c tele.Context) error {
 	// job (started immediately by the scheduler) persists the authoritative state.
 	var firstCheck string
 	if b.checker != nil {
-		code, latency, checkErr := b.checker.Check(b.rootCtx, ep.URL)
-		switch {
-		case checkErr != nil:
-			firstCheck = "\n<b>First check:</b> 🔴 connection error"
-		case code >= 200 && code < 300:
-			firstCheck = fmt.Sprintf("\n<b>First check:</b> 🟢 HTTP %d · %dms", code, latency.Milliseconds())
-		default:
-			firstCheck = fmt.Sprintf("\n<b>First check:</b> 🔴 HTTP %d · %dms", code, latency.Milliseconds())
+		res := b.checker.Check(b.rootCtx, ep.URL, monitor.CheckOptions{})
+		if res.Up {
+			firstCheck = fmt.Sprintf("\n<b>First check:</b> 🟢 HTTP %d · %dms", res.StatusCode, res.Latency.Milliseconds())
+		} else {
+			firstCheck = fmt.Sprintf("\n<b>First check:</b> 🔴 %s · %dms", htmlEscape(res.Reason), res.Latency.Milliseconds())
 		}
 	}
 
@@ -259,15 +260,6 @@ func (b *Bot) handlePauseResume(c tele.Context, pause bool) error {
 		return c.Send("Usage: /resume <code>&lt;name or id&gt;</code>")
 	}
 
-	ep, err := b.findEndpoint(args[0])
-	if err != nil {
-		if errors.Is(err, apperror.ErrNotFound) {
-			return c.Send("Endpoint not found.")
-		}
-		slog.Error("find endpoint", "error", err)
-		return c.Send("Internal error. Please try again.")
-	}
-
 	var until sql.NullTime
 	if pause && len(args) >= 2 {
 		d, err := time.ParseDuration(args[1])
@@ -275,6 +267,19 @@ func (b *Bot) handlePauseResume(c tele.Context, pause bool) error {
 			return c.Send("Invalid duration. Use format like 30m, 2h, 24h")
 		}
 		until = sql.NullTime{Time: time.Now().UTC().Add(d), Valid: true}
+	}
+
+	if args[0] == "all" {
+		return b.pauseResumeAll(c, pause, until)
+	}
+
+	ep, err := b.findEndpoint(args[0])
+	if err != nil {
+		if errors.Is(err, apperror.ErrNotFound) {
+			return c.Send("Endpoint not found.")
+		}
+		slog.Error("find endpoint", "error", err)
+		return c.Send("Internal error. Please try again.")
 	}
 
 	if ep.Paused == pause && !until.Valid {
@@ -331,4 +336,151 @@ func (b *Bot) findEndpoint(arg string) (storage.Endpoint, error) {
 		return ep, nil
 	}
 	return b.store.GetEndpointByURL(b.rootCtx, arg)
+}
+
+// pauseResumeAll applies a pause or resume to every endpoint.
+func (b *Bot) pauseResumeAll(c tele.Context, pause bool, until sql.NullTime) error {
+	endpoints, err := b.store.ListEndpoints(b.rootCtx)
+	if err != nil {
+		slog.Error("list endpoints", "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+
+	verb := "resumed"
+	if pause {
+		verb = "paused"
+	}
+
+	failed := 0
+	changed := 0
+	for _, ep := range endpoints {
+		if ep.Paused == pause {
+			continue
+		}
+		if err := b.setPaused(ep, pause, until); err != nil {
+			slog.Error("set paused", "id", ep.ID, "paused", pause, "error", err)
+			failed++
+			continue
+		}
+		changed++
+	}
+
+	msg := fmt.Sprintf("%s <b>%s %d endpoint(s)</b>.", map[bool]string{true: "⏸", false: "▶️"}[pause], verb, changed)
+	if pause && until.Valid {
+		msg += fmt.Sprintf(" Resumes automatically in %s.", FormatDuration(time.Until(until.Time)))
+	}
+	if failed > 0 {
+		msg += fmt.Sprintf(" %d failed — check logs.", failed)
+	}
+	if changed == 0 && failed == 0 {
+		msg = fmt.Sprintf("Nothing to do — all endpoints are already %s.", verb)
+	}
+	return c.Send(msg)
+}
+
+// handleExpect sets an exact expected HTTP status for an endpoint.
+// "/expect <name> any" resets to the default (any 2xx).
+func (b *Bot) handleExpect(c tele.Context) error {
+	args := strings.Fields(c.Message().Payload)
+	if len(args) < 2 {
+		return c.Send("Usage: /expect <code>&lt;name or id&gt; &lt;status|any&gt;</code>\nExample: /expect prod-api 200")
+	}
+
+	ep, err := b.findEndpoint(args[0])
+	if err != nil {
+		if errors.Is(err, apperror.ErrNotFound) {
+			return c.Send("Endpoint not found.")
+		}
+		slog.Error("find endpoint", "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+
+	code := 0
+	if args[1] != "any" {
+		code, err = strconv.Atoi(args[1])
+		if err != nil || code < 100 || code > 599 {
+			return c.Send("Invalid status code. Use 100-599, or \"any\" for any 2xx.")
+		}
+	}
+
+	if err := b.store.SetExpectedStatus(b.rootCtx, ep.ID, code); err != nil {
+		slog.Error("set expected status", "id", ep.ID, "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+
+	if code == 0 {
+		return c.Send(fmt.Sprintf("✅ %s now expects <b>any 2xx</b> status.", htmlEscape(ep.Name)))
+	}
+	return c.Send(fmt.Sprintf("✅ %s now expects exactly <b>HTTP %d</b>.", htmlEscape(ep.Name), code))
+}
+
+// handleKeyword sets a required response-body substring for an endpoint.
+// "/keyword <name> off" clears it.
+func (b *Bot) handleKeyword(c tele.Context) error {
+	args := strings.Fields(c.Message().Payload)
+	if len(args) < 2 {
+		return c.Send("Usage: /keyword <code>&lt;name or id&gt; &lt;text|off&gt;</code>\nExample: /keyword prod-api \"status\":\"ok\"")
+	}
+
+	ep, err := b.findEndpoint(args[0])
+	if err != nil {
+		if errors.Is(err, apperror.ErrNotFound) {
+			return c.Send("Endpoint not found.")
+		}
+		slog.Error("find endpoint", "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+
+	keyword := strings.Join(args[1:], " ")
+	if keyword == "off" {
+		keyword = ""
+	}
+	if len(keyword) > 200 {
+		return c.Send("Keyword too long (max 200 characters).")
+	}
+
+	if err := b.store.SetExpectedKeyword(b.rootCtx, ep.ID, keyword); err != nil {
+		slog.Error("set expected keyword", "id", ep.ID, "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+
+	if keyword == "" {
+		return c.Send(fmt.Sprintf("✅ Keyword check <b>disabled</b> for %s.", htmlEscape(ep.Name)))
+	}
+	return c.Send(fmt.Sprintf("✅ %s must now contain <code>%s</code> in its response.", htmlEscape(ep.Name), htmlEscape(keyword)), tele.NoPreview)
+}
+
+// handleRename renames an endpoint.
+func (b *Bot) handleRename(c tele.Context) error {
+	args := strings.Fields(c.Message().Payload)
+	if len(args) != 2 {
+		return c.Send("Usage: /rename <code>&lt;name or id&gt; &lt;new-name&gt;</code>")
+	}
+
+	ep, err := b.findEndpoint(args[0])
+	if err != nil {
+		if errors.Is(err, apperror.ErrNotFound) {
+			return c.Send("Endpoint not found.")
+		}
+		slog.Error("find endpoint", "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+
+	newName := args[1]
+	if err := ValidateName(newName); err != nil {
+		return c.Send(err.Error())
+	}
+	if newName == ep.Name {
+		return c.Send("That's already its name.")
+	}
+
+	if err := b.store.RenameEndpoint(b.rootCtx, ep.ID, newName); err != nil {
+		if errors.Is(err, apperror.ErrDuplicate) {
+			return c.Send("That name is already taken.")
+		}
+		slog.Error("rename endpoint", "id", ep.ID, "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+
+	return c.Send(fmt.Sprintf("✅ Renamed <b>%s</b> → <b>%s</b>", htmlEscape(ep.Name), htmlEscape(newName)))
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"noroshi/internal/monitor"
 	"noroshi/internal/storage"
 
 	tele "gopkg.in/telebot.v4"
@@ -22,6 +23,9 @@ type Store interface {
 	ListEndpoints(ctx context.Context) ([]storage.Endpoint, error)
 	UpdateEndpointInterval(ctx context.Context, id int64, intervalSeconds int) error
 	SetEndpointPaused(ctx context.Context, id int64, paused bool, until sql.NullTime) error
+	SetExpectedStatus(ctx context.Context, id int64, code int) error
+	SetExpectedKeyword(ctx context.Context, id int64, keyword string) error
+	RenameEndpoint(ctx context.Context, id int64, newName string) error
 }
 
 // Scheduler defines the scheduling methods the bot needs.
@@ -33,7 +37,7 @@ type Scheduler interface {
 
 // Checker performs an immediate HTTP health check (used by /add feedback).
 type Checker interface {
-	Check(ctx context.Context, url string) (statusCode int, latency time.Duration, err error)
+	Check(ctx context.Context, url string, opts monitor.CheckOptions) monitor.CheckResult
 }
 
 // Bot wraps the Telegram bot with application logic.
@@ -101,6 +105,9 @@ func (b *Bot) registerCommands() {
 		{Text: "status", Description: "Check all endpoints now"},
 		{Text: "pause", Description: "Pause monitoring an endpoint"},
 		{Text: "resume", Description: "Resume monitoring an endpoint"},
+		{Text: "expect", Description: "Require an exact HTTP status"},
+		{Text: "keyword", Description: "Require text in the response"},
+		{Text: "rename", Description: "Rename an endpoint"},
 		{Text: "help", Description: "Show help and usage info"},
 	})
 	if err != nil {
@@ -183,4 +190,10 @@ func (n *TelegramNotifier) NotifyFailure(ctx context.Context, ep storage.Endpoin
 func (n *TelegramNotifier) NotifyRecovery(ctx context.Context, ep storage.Endpoint, downtime time.Duration) error {
 	msg := FormatRecovery(ep, downtime)
 	return n.bot.SendSilentReply(msg, RecoveryKeyboard(ep), ep.AlertMessageID)
+}
+
+// NotifyCertExpiry sends a silent certificate-expiry warning.
+func (n *TelegramNotifier) NotifyCertExpiry(ctx context.Context, ep storage.Endpoint, daysLeft int) error {
+	msg := FormatCertWarning(ep, daysLeft)
+	return n.bot.SendSilentReply(msg, RecoveryKeyboard(ep), 0)
 }

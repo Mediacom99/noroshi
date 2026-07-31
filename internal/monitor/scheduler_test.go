@@ -39,20 +39,23 @@ func (m *mockStore) GetEndpoint(_ context.Context, id int64) (storage.Endpoint, 
 	return ep, nil
 }
 
-func (m *mockStore) UpdateEndpointStatus(_ context.Context, id int64, status string, _ int, _ int64) error {
+func (m *mockStore) UpdateEndpointStatus(_ context.Context, id int64, o storage.CheckOutcome) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ep, ok := m.endpoints[id]
 	if !ok {
 		return &notFoundError{}
 	}
-	ep.Status = status
+	ep.Status = o.Status
+	ep.LastStatusCode = o.StatusCode
+	ep.LastLatencyMs = o.LatencyMs
+	ep.LastCheckError = o.Reason
 	ep.LastCheckedAt = sql.NullTime{Time: time.Now(), Valid: true}
 	m.endpoints[id] = ep
 	return nil
 }
 
-func (m *mockStore) RecordFailure(_ context.Context, id int64, _ int, _ int64, maxNotifications int, failureThreshold int) (storage.Endpoint, error) {
+func (m *mockStore) RecordFailure(_ context.Context, id int64, _ storage.CheckOutcome, maxNotifications int, failureThreshold int) (storage.Endpoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ep, ok := m.endpoints[id]
@@ -73,7 +76,7 @@ func (m *mockStore) RecordFailure(_ context.Context, id int64, _ int, _ int64, m
 	return ep, nil
 }
 
-func (m *mockStore) RecordRecovery(_ context.Context, id int64, _ int, _ int64) (storage.Endpoint, error) {
+func (m *mockStore) RecordRecovery(_ context.Context, id int64, _ storage.CheckOutcome) (storage.Endpoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ep, ok := m.endpoints[id]
@@ -128,6 +131,18 @@ func (m *mockStore) SetAlertMessageID(_ context.Context, id int64, messageID int
 	return nil
 }
 
+func (m *mockStore) TouchCertWarning(_ context.Context, id int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ep, ok := m.endpoints[id]
+	if !ok {
+		return &notFoundError{}
+	}
+	ep.LastCertWarningAt = sql.NullTime{Time: time.Now(), Valid: true}
+	m.endpoints[id] = ep
+	return nil
+}
+
 func (m *mockStore) TouchLastNotified(_ context.Context, id int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -146,9 +161,10 @@ func (e *notFoundError) Error() string { return "not found" }
 
 // mockNotifier records notification calls.
 type mockNotifier struct {
-	mu         sync.Mutex
-	failures   []storage.Endpoint
-	recoveries []recoveryCall
+	mu           sync.Mutex
+	failures     []storage.Endpoint
+	recoveries   []recoveryCall
+	certWarnings int
 }
 
 type recoveryCall struct {
@@ -161,6 +177,13 @@ func (n *mockNotifier) NotifyFailure(_ context.Context, ep storage.Endpoint) (in
 	defer n.mu.Unlock()
 	n.failures = append(n.failures, ep)
 	return int64(len(n.failures)), nil
+}
+
+func (n *mockNotifier) NotifyCertExpiry(_ context.Context, ep storage.Endpoint, daysLeft int) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.certWarnings++
+	return nil
 }
 
 func (n *mockNotifier) NotifyRecovery(_ context.Context, ep storage.Endpoint, downtime time.Duration) error {
@@ -184,11 +207,11 @@ func (n *mockNotifier) recoveryCount() int {
 
 // mockChecker implements Checker for deterministic testing without HTTP.
 type mockChecker struct {
-	checkFn func(ctx context.Context, url string) (int, time.Duration, error)
+	checkFn func(ctx context.Context, url string, opts CheckOptions) CheckResult
 }
 
-func (m *mockChecker) Check(ctx context.Context, url string) (int, time.Duration, error) {
-	return m.checkFn(ctx, url)
+func (m *mockChecker) Check(ctx context.Context, url string, opts CheckOptions) CheckResult {
+	return m.checkFn(ctx, url, opts)
 }
 
 func newMockScheduler(t *testing.T, store *mockStore, checker *mockChecker, notifier *mockNotifier, maxFail int) *Scheduler {
@@ -205,8 +228,8 @@ func TestCheckAndNotifyMockOK(t *testing.T) {
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
-			return 200, 10 * time.Millisecond, nil
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{Up: true, StatusCode: 200, Latency: 10 * time.Millisecond}
 		},
 	}
 
@@ -231,8 +254,8 @@ func TestCheckAndNotifyMockFailure(t *testing.T) {
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
-			return 503, 10 * time.Millisecond, nil
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{Up: false, StatusCode: 503, Latency: 10 * time.Millisecond, Reason: "HTTP 503"}
 		},
 	}
 
@@ -249,8 +272,8 @@ func TestCheckAndNotifyMockConnectionError(t *testing.T) {
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
-			return 0, 0, fmt.Errorf("connection refused")
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{Up: false, Reason: "connection error", Err: fmt.Errorf("connection refused")}
 		},
 	}
 
@@ -267,8 +290,8 @@ func TestCheckAndNotifyMockFailureCap(t *testing.T) {
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
-			return 500, 10 * time.Millisecond, nil
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{Up: false, StatusCode: 500, Latency: 10 * time.Millisecond, Reason: "HTTP 500"}
 		},
 	}
 
@@ -291,11 +314,11 @@ func TestCheckAndNotifyMockRecovery(t *testing.T) {
 
 	returnFailure := true
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
 			if returnFailure {
-				return 503, 10 * time.Millisecond, nil
+				return CheckResult{Up: false, StatusCode: 503, Latency: 10 * time.Millisecond, Reason: "HTTP 503"}
 			}
-			return 200, 10 * time.Millisecond, nil
+			return CheckResult{Up: true, StatusCode: 200, Latency: 10 * time.Millisecond}
 		},
 	}
 
@@ -454,8 +477,8 @@ func TestCheckAndNotifyMock2xxIsOK(t *testing.T) {
 		store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
 		notifier := &mockNotifier{}
 		checker := &mockChecker{
-			checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
-				return code, 10 * time.Millisecond, nil
+			checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+				return CheckResult{Up: true, StatusCode: code, Latency: 10 * time.Millisecond}
 			},
 		}
 
@@ -477,8 +500,8 @@ func TestCheckAndNotifyMockRedirectIsFailure(t *testing.T) {
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
-			return 301, 10 * time.Millisecond, nil
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{Up: false, StatusCode: 301, Latency: 10 * time.Millisecond, Reason: "HTTP 301"}
 		},
 	}
 
@@ -499,7 +522,7 @@ func TestSchedulerSingletonMode(t *testing.T) {
 	running := 0
 	maxConcurrent := 0
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
 			mu.Lock()
 			running++
 			if running > maxConcurrent {
@@ -514,7 +537,7 @@ func TestSchedulerSingletonMode(t *testing.T) {
 			mu.Lock()
 			running--
 			mu.Unlock()
-			return 200, 10 * time.Millisecond, nil
+			return CheckResult{Up: true, StatusCode: 200, Latency: 10 * time.Millisecond}
 		},
 	}
 
@@ -542,11 +565,11 @@ func TestCheckNow(t *testing.T) {
 
 	fail := false
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
 			if fail {
-				return 503, 10 * time.Millisecond, nil
+				return CheckResult{Up: false, StatusCode: 503, Latency: 10 * time.Millisecond, Reason: "HTTP 503"}
 			}
-			return 200, 10 * time.Millisecond, nil
+			return CheckResult{Up: true, StatusCode: 200, Latency: 10 * time.Millisecond}
 		},
 	}
 
@@ -601,8 +624,8 @@ func TestCheckAndNotifyFailureThreshold(t *testing.T) {
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
-			return 500, 10 * time.Millisecond, nil
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{Up: false, StatusCode: 500, Latency: 10 * time.Millisecond, Reason: "HTTP 500"}
 		},
 	}
 
@@ -645,9 +668,9 @@ func TestCheckAndNotifyPaused(t *testing.T) {
 
 	called := false
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
 			called = true
-			return 500, 10 * time.Millisecond, nil
+			return CheckResult{Up: false, StatusCode: 500, Latency: 10 * time.Millisecond, Reason: "HTTP 500"}
 		},
 	}
 
@@ -668,8 +691,8 @@ func TestCheckAndNotifyReminder(t *testing.T) {
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
-			return 500, 10 * time.Millisecond, nil
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{Up: false, StatusCode: 500, Latency: 10 * time.Millisecond, Reason: "HTTP 500"}
 		},
 	}
 
@@ -695,8 +718,8 @@ func TestCheckAndNotifyNoReminderWhenDisabled(t *testing.T) {
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
-			return 500, 10 * time.Millisecond, nil
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{Up: false, StatusCode: 500, Latency: 10 * time.Millisecond, Reason: "HTTP 500"}
 		},
 	}
 
@@ -718,8 +741,8 @@ func TestCheckAndNotifyStoresAlertMessageID(t *testing.T) {
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
-			return 500, 10 * time.Millisecond, nil
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{Up: false, StatusCode: 500, Latency: 10 * time.Millisecond, Reason: "HTTP 500"}
 		},
 	}
 
@@ -746,8 +769,8 @@ func TestResumeExpiredPauses(t *testing.T) {
 	})
 	notifier := &mockNotifier{}
 	checker := &mockChecker{
-		checkFn: func(_ context.Context, _ string) (int, time.Duration, error) {
-			return 200, 10 * time.Millisecond, nil
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{Up: true, StatusCode: 200, Latency: 10 * time.Millisecond}
 		},
 	}
 
@@ -761,5 +784,52 @@ func TestResumeExpiredPauses(t *testing.T) {
 	ep2, _ := store.GetEndpoint(context.Background(), 2)
 	if !ep2.Paused {
 		t.Error("endpoint 2 should still be paused (not yet expired)")
+	}
+}
+
+func TestCertExpiryWarning(t *testing.T) {
+	store := newMockStore()
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
+	notifier := &mockNotifier{}
+	checker := &mockChecker{
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{
+				Up: true, StatusCode: 200, Latency: 10 * time.Millisecond,
+				CertExpiry: time.Now().Add(7 * 24 * time.Hour), // 7 days left
+			}
+		},
+	}
+
+	sched := newMockScheduler(t, store, checker, notifier, 3)
+
+	sched.checkAndNotify(1)
+	if notifier.certWarnings != 1 {
+		t.Errorf("cert warnings = %d, want 1", notifier.certWarnings)
+	}
+
+	// Second check within cooldown: no new warning.
+	sched.checkAndNotify(1)
+	if notifier.certWarnings != 1 {
+		t.Errorf("cert warnings = %d, want 1 (cooldown)", notifier.certWarnings)
+	}
+}
+
+func TestCertExpiryNoWarningWhenFar(t *testing.T) {
+	store := newMockStore()
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
+	notifier := &mockNotifier{}
+	checker := &mockChecker{
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{
+				Up: true, StatusCode: 200, Latency: 10 * time.Millisecond,
+				CertExpiry: time.Now().Add(90 * 24 * time.Hour),
+			}
+		},
+	}
+
+	sched := newMockScheduler(t, store, checker, notifier, 3)
+	sched.checkAndNotify(1)
+	if notifier.certWarnings != 0 {
+		t.Errorf("cert warnings = %d, want 0 (90 days left)", notifier.certWarnings)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"time"
 
+	"noroshi/internal/monitor"
 	"noroshi/internal/storage"
 
 	tele "gopkg.in/telebot.v4"
@@ -24,14 +25,14 @@ func newTestBot(store Store, scheduler Scheduler) *Bot {
 
 // mockChecker implements bot.Checker with function-field delegation.
 type mockChecker struct {
-	checkFn func(ctx context.Context, url string) (int, time.Duration, error)
+	checkFn func(ctx context.Context, url string, opts monitor.CheckOptions) monitor.CheckResult
 }
 
-func (m *mockChecker) Check(ctx context.Context, url string) (int, time.Duration, error) {
+func (m *mockChecker) Check(ctx context.Context, url string, opts monitor.CheckOptions) monitor.CheckResult {
 	if m.checkFn != nil {
-		return m.checkFn(ctx, url)
+		return m.checkFn(ctx, url, opts)
 	}
-	return 200, 10 * time.Millisecond, nil
+	return monitor.CheckResult{Up: true, StatusCode: 200, Latency: 10 * time.Millisecond}
 }
 
 // mockContext implements tele.Context for handler testing.
@@ -105,6 +106,9 @@ type mockStore struct {
 	listEndpointsFn          func(ctx context.Context) ([]storage.Endpoint, error)
 	updateEndpointIntervalFn func(ctx context.Context, id int64, interval int) error
 	setEndpointPausedFn      func(ctx context.Context, id int64, paused bool, until sql.NullTime) error
+	setExpectedStatusFn      func(ctx context.Context, id int64, code int) error
+	setExpectedKeywordFn     func(ctx context.Context, id int64, keyword string) error
+	renameEndpointFn         func(ctx context.Context, id int64, newName string) error
 }
 
 func (m *mockStore) AddEndpoint(ctx context.Context, name, url string, interval int) (storage.Endpoint, error) {
@@ -159,6 +163,27 @@ func (m *mockStore) UpdateEndpointInterval(ctx context.Context, id int64, interv
 func (m *mockStore) SetEndpointPaused(ctx context.Context, id int64, paused bool, until sql.NullTime) error {
 	if m.setEndpointPausedFn != nil {
 		return m.setEndpointPausedFn(ctx, id, paused, until)
+	}
+	return nil
+}
+
+func (m *mockStore) SetExpectedStatus(ctx context.Context, id int64, code int) error {
+	if m.setExpectedStatusFn != nil {
+		return m.setExpectedStatusFn(ctx, id, code)
+	}
+	return nil
+}
+
+func (m *mockStore) SetExpectedKeyword(ctx context.Context, id int64, keyword string) error {
+	if m.setExpectedKeywordFn != nil {
+		return m.setExpectedKeywordFn(ctx, id, keyword)
+	}
+	return nil
+}
+
+func (m *mockStore) RenameEndpoint(ctx context.Context, id int64, newName string) error {
+	if m.renameEndpointFn != nil {
+		return m.renameEndpointFn(ctx, id, newName)
 	}
 	return nil
 }

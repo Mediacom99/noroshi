@@ -14,6 +14,8 @@ A self-contained uptime monitor in Go that uses a Telegram bot as its only inter
 - **Pause/resume** — silence an endpoint during maintenance, optionally with auto-resume (`/pause prod-api 2h`)
 - **Actionable, threaded alerts** — failure alerts carry check-now/pause/detail buttons; the recovery arrives as a reply to the original alert
 - **Slow-endpoint detection** — optional 🟡 degraded state when latency exceeds a threshold
+- **Content checks** — require an exact HTTP status and/or a keyword in the response body
+- **TLS certificate expiry warnings** for HTTPS endpoints
 - **On-demand checks** — `/status` probes all endpoints immediately and reports HTTP code and latency
 - **SQLite persistence** — endpoints survive restarts; pure-Go driver, no CGO
 - **Single container** — multi-arch image (`linux/amd64`, `linux/arm64`) published to GHCR, `/healthz` endpoint for orchestrators
@@ -59,6 +61,9 @@ CGO_ENABLED=0 go build ./cmd/monitor/
 | `/add <name> <url> [interval]` | Add endpoint, e.g. `/add prod-api https://example.com 30s` (default interval: `1m`) |
 | `/delete <name or id>` | Remove endpoint from monitoring |
 | `/interval <name or id> <interval>` | Change check interval |
+| `/expect <name or id> <status or any>` | Require an exact HTTP status (default: any 2xx) |
+| `/keyword <name or id> <text or off>` | Require a substring in the response body |
+| `/rename <name or id> <new-name>` | Rename an endpoint |
 | `/pause <name or id> [duration]` | Stop checks and alerts, keep the endpoint configured (auto-resumes if a duration is given, e.g. `/pause prod-api 2h`) |
 | `/resume <name or id>` | Resume a paused endpoint |
 | `/list` | Dashboard of all endpoints with inline action buttons (check now, pause, interval, delete) |
@@ -67,7 +72,8 @@ CGO_ENABLED=0 go build ./cmd/monitor/
 
 - Names: 1–50 chars, letters/digits/`-`/`_`, not all-numeric (IDs take precedence in lookups).
 - Intervals: `10s`, `30s`, `1m`, `5m`, `1h`, etc. (minimum `10s`).
-- An endpoint is **up** when the check returns any HTTP 2xx status; anything else (including connection errors) is down.
+- An endpoint is **up** when the check returns any HTTP 2xx status (or the exact status set via `/expect`) **and** the response contains the keyword set via `/keyword`, if any. Anything else (including connection errors) is down.
+- HTTPS endpoints get an automatic **certificate expiry warning** when the cert has less than 14 days left (at most one warning per day).
 
 ## Configuration
 

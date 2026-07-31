@@ -18,9 +18,23 @@ type Endpoint struct {
 	FailureNotificationsSent int
 	LastStatusCode           int
 	LastLatencyMs            int64
+	LastCheckError           string
+	ExpectedStatus           int
+	ExpectedKeyword          string
+	CertExpiresAt            sql.NullTime
+	LastCertWarningAt        sql.NullTime
 	Paused                   bool
 	PausedUntil              sql.NullTime
 	LastNotifiedAt           sql.NullTime
 	AlertMessageID           int64
 	CreatedAt                time.Time
+}
+
+// CheckOutcome carries the persisted result of a single health check.
+type CheckOutcome struct {
+	Status     string // "ok" or "not_ok"
+	StatusCode int
+	LatencyMs  int64
+	Reason     string // human-readable failure reason, "" when ok
+	CertExpiry sql.NullTime
 }

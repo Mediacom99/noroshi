@@ -79,11 +79,13 @@ func (s *SQLiteStore) GetEndpoint(ctx context.Context, id int64) (Endpoint, erro
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, name, url, interval_seconds, status, last_checked_at, last_failure_at,
 		        consecutive_failures, failure_notifications_sent, last_status_code, last_latency_ms,
+		        last_check_error, expected_status, expected_keyword, cert_expires_at, last_cert_warning_at,
 		        paused, paused_until, last_notified_at, alert_message_id, created_at
 		 FROM endpoints WHERE id = ?`, id,
 	).Scan(&ep.ID, &ep.Name, &ep.URL, &ep.IntervalSeconds, &ep.Status,
 		&ep.LastCheckedAt, &ep.LastFailureAt,
 		&ep.ConsecutiveFailures, &ep.FailureNotificationsSent, &ep.LastStatusCode, &ep.LastLatencyMs,
+		&ep.LastCheckError, &ep.ExpectedStatus, &ep.ExpectedKeyword, &ep.CertExpiresAt, &ep.LastCertWarningAt,
 		&ep.Paused, &ep.PausedUntil, &ep.LastNotifiedAt, &ep.AlertMessageID, &ep.CreatedAt)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -100,11 +102,13 @@ func (s *SQLiteStore) GetEndpointByURL(ctx context.Context, url string) (Endpoin
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, name, url, interval_seconds, status, last_checked_at, last_failure_at,
 		        consecutive_failures, failure_notifications_sent, last_status_code, last_latency_ms,
+		        last_check_error, expected_status, expected_keyword, cert_expires_at, last_cert_warning_at,
 		        paused, paused_until, last_notified_at, alert_message_id, created_at
 		 FROM endpoints WHERE url = ?`, url,
 	).Scan(&ep.ID, &ep.Name, &ep.URL, &ep.IntervalSeconds, &ep.Status,
 		&ep.LastCheckedAt, &ep.LastFailureAt,
 		&ep.ConsecutiveFailures, &ep.FailureNotificationsSent, &ep.LastStatusCode, &ep.LastLatencyMs,
+		&ep.LastCheckError, &ep.ExpectedStatus, &ep.ExpectedKeyword, &ep.CertExpiresAt, &ep.LastCertWarningAt,
 		&ep.Paused, &ep.PausedUntil, &ep.LastNotifiedAt, &ep.AlertMessageID, &ep.CreatedAt)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -121,11 +125,13 @@ func (s *SQLiteStore) GetEndpointByName(ctx context.Context, name string) (Endpo
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, name, url, interval_seconds, status, last_checked_at, last_failure_at,
 		        consecutive_failures, failure_notifications_sent, last_status_code, last_latency_ms,
+		        last_check_error, expected_status, expected_keyword, cert_expires_at, last_cert_warning_at,
 		        paused, paused_until, last_notified_at, alert_message_id, created_at
 		 FROM endpoints WHERE name = ?`, name,
 	).Scan(&ep.ID, &ep.Name, &ep.URL, &ep.IntervalSeconds, &ep.Status,
 		&ep.LastCheckedAt, &ep.LastFailureAt,
 		&ep.ConsecutiveFailures, &ep.FailureNotificationsSent, &ep.LastStatusCode, &ep.LastLatencyMs,
+		&ep.LastCheckError, &ep.ExpectedStatus, &ep.ExpectedKeyword, &ep.CertExpiresAt, &ep.LastCertWarningAt,
 		&ep.Paused, &ep.PausedUntil, &ep.LastNotifiedAt, &ep.AlertMessageID, &ep.CreatedAt)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -156,6 +162,7 @@ func (s *SQLiteStore) ListEndpoints(ctx context.Context) ([]Endpoint, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, name, url, interval_seconds, status, last_checked_at, last_failure_at,
 		        consecutive_failures, failure_notifications_sent, last_status_code, last_latency_ms,
+		        last_check_error, expected_status, expected_keyword, cert_expires_at, last_cert_warning_at,
 		        paused, paused_until, last_notified_at, alert_message_id, created_at
 		 FROM endpoints ORDER BY id`,
 	)
@@ -170,6 +177,7 @@ func (s *SQLiteStore) ListEndpoints(ctx context.Context) ([]Endpoint, error) {
 		if err := rows.Scan(&ep.ID, &ep.Name, &ep.URL, &ep.IntervalSeconds, &ep.Status,
 			&ep.LastCheckedAt, &ep.LastFailureAt,
 			&ep.ConsecutiveFailures, &ep.FailureNotificationsSent, &ep.LastStatusCode, &ep.LastLatencyMs,
+			&ep.LastCheckError, &ep.ExpectedStatus, &ep.ExpectedKeyword, &ep.CertExpiresAt, &ep.LastCertWarningAt,
 			&ep.Paused, &ep.PausedUntil, &ep.LastNotifiedAt, &ep.AlertMessageID, &ep.CreatedAt); err != nil {
 			return nil, apperror.Wrap(apperror.ErrDatabase, err)
 		}
@@ -181,11 +189,12 @@ func (s *SQLiteStore) ListEndpoints(ctx context.Context) ([]Endpoint, error) {
 	return endpoints, nil
 }
 
-func (s *SQLiteStore) UpdateEndpointStatus(ctx context.Context, id int64, status string, statusCode int, latencyMs int64) error {
+func (s *SQLiteStore) UpdateEndpointStatus(ctx context.Context, id int64, o CheckOutcome) error {
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx,
-		"UPDATE endpoints SET status = ?, last_checked_at = ?, last_status_code = ?, last_latency_ms = ? WHERE id = ?",
-		status, now, statusCode, latencyMs, id,
+		`UPDATE endpoints SET status = ?, last_checked_at = ?, last_status_code = ?, last_latency_ms = ?,
+			last_check_error = ?, cert_expires_at = ? WHERE id = ?`,
+		o.Status, now, o.StatusCode, o.LatencyMs, o.Reason, o.CertExpiry, id,
 	)
 	if err != nil {
 		return apperror.Wrap(apperror.ErrDatabase, err)
@@ -241,6 +250,7 @@ func (s *SQLiteStore) ListExpiredPauses(ctx context.Context, now time.Time) ([]E
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, name, url, interval_seconds, status, last_checked_at, last_failure_at,
 		        consecutive_failures, failure_notifications_sent, last_status_code, last_latency_ms,
+		        last_check_error, expected_status, expected_keyword, cert_expires_at, last_cert_warning_at,
 		        paused, paused_until, last_notified_at, alert_message_id, created_at
 		 FROM endpoints WHERE paused = 1 AND paused_until IS NOT NULL AND paused_until <= ?`,
 		now,
@@ -256,6 +266,7 @@ func (s *SQLiteStore) ListExpiredPauses(ctx context.Context, now time.Time) ([]E
 		if err := rows.Scan(&ep.ID, &ep.Name, &ep.URL, &ep.IntervalSeconds, &ep.Status,
 			&ep.LastCheckedAt, &ep.LastFailureAt,
 			&ep.ConsecutiveFailures, &ep.FailureNotificationsSent, &ep.LastStatusCode, &ep.LastLatencyMs,
+			&ep.LastCheckError, &ep.ExpectedStatus, &ep.ExpectedKeyword, &ep.CertExpiresAt, &ep.LastCertWarningAt,
 			&ep.Paused, &ep.PausedUntil, &ep.LastNotifiedAt, &ep.AlertMessageID, &ep.CreatedAt); err != nil {
 			return nil, apperror.Wrap(apperror.ErrDatabase, err)
 		}
@@ -299,7 +310,7 @@ func (s *SQLiteStore) TouchLastNotified(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (s *SQLiteStore) RecordFailure(ctx context.Context, id int64, statusCode int, latencyMs int64, maxNotifications int, failureThreshold int) (Endpoint, error) {
+func (s *SQLiteStore) RecordFailure(ctx context.Context, id int64, o CheckOutcome, maxNotifications int, failureThreshold int) (Endpoint, error) {
 	now := time.Now().UTC()
 
 	// Set last_failure_at only on first failure (when consecutive_failures was 0).
@@ -321,9 +332,12 @@ func (s *SQLiteStore) RecordFailure(ctx context.Context, id int64, statusCode in
 			END,
 			last_failure_at = CASE WHEN consecutive_failures = 0 THEN ? ELSE last_failure_at END,
 			last_status_code = ?,
-			last_latency_ms = ?
+			last_latency_ms = ?,
+			last_check_error = ?,
+			cert_expires_at = ?
 		 WHERE id = ?`,
-		now, maxNotifications, failureThreshold, maxNotifications, failureThreshold, now, now, statusCode, latencyMs, id,
+		now, maxNotifications, failureThreshold, maxNotifications, failureThreshold, now, now,
+		o.StatusCode, o.LatencyMs, o.Reason, o.CertExpiry, id,
 	)
 	if err != nil {
 		return Endpoint{}, apperror.Wrap(apperror.ErrDatabase, err)
@@ -332,7 +346,7 @@ func (s *SQLiteStore) RecordFailure(ctx context.Context, id int64, statusCode in
 	return s.GetEndpoint(ctx, id)
 }
 
-func (s *SQLiteStore) RecordRecovery(ctx context.Context, id int64, statusCode int, latencyMs int64) (Endpoint, error) {
+func (s *SQLiteStore) RecordRecovery(ctx context.Context, id int64, o CheckOutcome) (Endpoint, error) {
 	// First get the current endpoint to preserve last_failure_at for downtime calculation
 	ep, err := s.GetEndpoint(ctx, id)
 	if err != nil {
@@ -350,9 +364,11 @@ func (s *SQLiteStore) RecordRecovery(ctx context.Context, id int64, statusCode i
 			last_notified_at = NULL,
 			alert_message_id = 0,
 			last_status_code = ?,
-			last_latency_ms = ?
+			last_latency_ms = ?,
+			last_check_error = '',
+			cert_expires_at = ?
 		 WHERE id = ?`,
-		now, statusCode, latencyMs, id,
+		now, o.StatusCode, o.LatencyMs, o.CertExpiry, id,
 	)
 	if err != nil {
 		return Endpoint{}, apperror.Wrap(apperror.ErrDatabase, err)
@@ -364,9 +380,62 @@ func (s *SQLiteStore) RecordRecovery(ctx context.Context, id int64, statusCode i
 	ep.LastCheckedAt = sql.NullTime{Time: now, Valid: true}
 	ep.ConsecutiveFailures = 0
 	ep.FailureNotificationsSent = 0
-	ep.LastStatusCode = statusCode
-	ep.LastLatencyMs = latencyMs
+	ep.LastStatusCode = o.StatusCode
+	ep.LastLatencyMs = o.LatencyMs
+	ep.LastCheckError = ""
+	ep.CertExpiresAt = o.CertExpiry
 	return ep, nil
+}
+
+// SetExpectedStatus sets the exact HTTP status an endpoint must return (0 = any 2xx).
+func (s *SQLiteStore) SetExpectedStatus(ctx context.Context, id int64, code int) error {
+	return s.updateColumn(ctx, id, "expected_status", code)
+}
+
+// SetExpectedKeyword sets the substring the response body must contain ("" = disabled).
+func (s *SQLiteStore) SetExpectedKeyword(ctx context.Context, id int64, keyword string) error {
+	return s.updateColumn(ctx, id, "expected_keyword", keyword)
+}
+
+// RenameEndpoint changes an endpoint's name.
+func (s *SQLiteStore) RenameEndpoint(ctx context.Context, id int64, newName string) error {
+	result, err := s.db.ExecContext(ctx, "UPDATE endpoints SET name = ? WHERE id = ?", newName, id)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return apperror.Wrap(apperror.ErrDuplicate, err)
+		}
+		return apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	if rows == 0 {
+		return apperror.Wrap(apperror.ErrNotFound, fmt.Errorf("endpoint %d not found", id))
+	}
+	return nil
+}
+
+// TouchCertWarning records that a certificate-expiry warning was just sent.
+func (s *SQLiteStore) TouchCertWarning(ctx context.Context, id int64) error {
+	return s.updateColumn(ctx, id, "last_cert_warning_at", time.Now().UTC())
+}
+
+func (s *SQLiteStore) updateColumn(ctx context.Context, id int64, column string, value interface{}) error {
+	// column is only ever a hardcoded identifier from this package — never user input.
+	query := fmt.Sprintf("UPDATE endpoints SET %s = ? WHERE id = ?", column)
+	result, err := s.db.ExecContext(ctx, query, value, id)
+	if err != nil {
+		return apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	if rows == 0 {
+		return apperror.Wrap(apperror.ErrNotFound, fmt.Errorf("endpoint %d not found", id))
+	}
+	return nil
 }
 
 func isUniqueViolation(err error) bool {

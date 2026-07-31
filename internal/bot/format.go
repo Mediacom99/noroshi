@@ -184,6 +184,35 @@ func FormatRecovery(ep storage.Endpoint, downtime time.Duration) string {
 	)
 }
 
+// FormatCertWarning formats a certificate-expiry warning message.
+func FormatCertWarning(ep storage.Endpoint, daysLeft int) string {
+	var when string
+	switch {
+	case daysLeft < 0:
+		when = "expired"
+	case daysLeft == 0:
+		when = "expires today"
+	default:
+		when = fmt.Sprintf("expires in %d days", daysLeft)
+	}
+
+	expiry := ""
+	if ep.CertExpiresAt.Valid {
+		expiry = fmt.Sprintf("\n<b>Expiry:</b> %s", ep.CertExpiresAt.Time.UTC().Format("2006-01-02"))
+	}
+
+	return fmt.Sprintf(
+		"⚠️ <b>Certificate Expiring</b>\n\n"+
+			"<b>%s</b>\n"+
+			"<code>%s</code>\n\n"+
+			"<b>TLS:</b> %s%s",
+		htmlEscape(ep.Name),
+		htmlEscape(ep.URL),
+		when,
+		expiry,
+	)
+}
+
 // AlertKeyboard returns the action buttons attached to a failure alert.
 func AlertKeyboard(ep storage.Endpoint) *tele.ReplyMarkup {
 	id := strconv.FormatInt(ep.ID, 10)
@@ -312,7 +341,22 @@ func FormatEndpointDetail(ep storage.Endpoint, slowThresholdMs int64) (string, *
 		fmt.Fprintf(&b, "\n<b>HTTP:</b> %d", ep.LastStatusCode)
 	}
 
+	if ep.Status == "not_ok" && ep.LastCheckError != "" {
+		fmt.Fprintf(&b, "\n<b>Error:</b> %s", htmlEscape(ep.LastCheckError))
+	}
+
 	fmt.Fprintf(&b, "\n<b>Interval:</b> %s", interval)
+
+	if ep.ExpectedStatus > 0 {
+		fmt.Fprintf(&b, "\n<b>Expected:</b> HTTP %d", ep.ExpectedStatus)
+	}
+	if ep.ExpectedKeyword != "" {
+		fmt.Fprintf(&b, "\n<b>Keyword:</b> <code>%s</code>", htmlEscape(ep.ExpectedKeyword))
+	}
+	if ep.CertExpiresAt.Valid {
+		days := int(time.Until(ep.CertExpiresAt.Time).Hours() / 24)
+		fmt.Fprintf(&b, "\n<b>TLS:</b> %s (%d days left)", ep.CertExpiresAt.Time.UTC().Format("2006-01-02"), days)
+	}
 
 	if ep.LastCheckedAt.Valid {
 		fmt.Fprintf(&b, "\n<b>Latency:</b> %dms", ep.LastLatencyMs)
@@ -355,6 +399,9 @@ func FormatHelp() string {
 		"/resume <code>&lt;name or id&gt;</code> — Resume monitoring\n\n" +
 		"<b>Manage</b>\n" +
 		"/interval <code>&lt;name or id&gt; &lt;duration&gt;</code> — Change interval\n" +
+		"/expect <code>&lt;name or id&gt; &lt;status|any&gt;</code> — Require exact HTTP status\n" +
+		"/keyword <code>&lt;name or id&gt; &lt;text|off&gt;</code> — Require text in response\n" +
+		"/rename <code>&lt;name or id&gt; &lt;new-name&gt;</code> — Rename endpoint\n" +
 		"/delete <code>&lt;name or id&gt;</code> — Remove endpoint\n" +
 		"/help — This message\n\n" +
 		"<b>Intervals:</b> 10s · 30s · 1m · 5m · 1h (min 10s)\n" +

@@ -28,7 +28,7 @@ noroshi/
 │   │   ├── scheduler.go                 # gocron scheduler, checkAndNotify, CheckNow
 │   │   └── *_test.go
 │   └── storage/
-│       ├── migrations/                  # goose migrations 001–006
+│       ├── migrations/                  # goose migrations 001–007
 │       ├── models.go                    # Endpoint struct
 │       ├── store.go                     # OpenDB, RunMigrations, SQLiteStore
 │       └── store_test.go
@@ -88,9 +88,11 @@ s.Shutdown()                 // blocks until running jobs finish
 
 retryablehttp with `RetryMax=2`, `RetryWaitMin=500ms`, `RetryWaitMax=2s`, per-request timeout from config, default retry policy (connection errors + 5xx, never 4xx), and `PassthroughErrorHandler` so the last response is returned after retries are exhausted. `Check` returns `(statusCode, latency, error)` and drains the response body for keep-alive reuse.
 
-**Success rule: any HTTP 2xx is UP.** Everything else — 3xx, 4xx, 5xx, connection error — is DOWN.
+**Success rule:** by default any HTTP 2xx is UP. Per endpoint, `/expect` can require an exact status and `/keyword` a substring in the response body (first 1 MiB). Everything else — 3xx, 4xx, 5xx, wrong status, missing keyword, connection error — is DOWN, with the reason persisted in `last_check_error`.
 
-## Database Schema (after migrations 001–006)
+`Check(ctx, url, CheckOptions) CheckResult` returns up/down, status, latency, failure reason, and TLS certificate expiry. When a cert expires in < 14 days, the scheduler sends a warning at most once per 24h (`last_cert_warning_at`).
+
+## Database Schema (after migrations 001–007)
 
 ```sql
 CREATE TABLE endpoints (
@@ -109,7 +111,12 @@ CREATE TABLE endpoints (
     paused INTEGER NOT NULL DEFAULT 0,             -- 005
     last_notified_at DATETIME,                     -- 006: drives REMINDER_INTERVAL re-alerts
     paused_until DATETIME,                         -- 006: auto-resume time for timed pauses
-    alert_message_id INTEGER NOT NULL DEFAULT 0    -- 006: Telegram alert to thread recovery to
+    alert_message_id INTEGER NOT NULL DEFAULT 0,   -- 006: Telegram alert to thread recovery to
+    expected_status INTEGER NOT NULL DEFAULT 0,    -- 007: exact status required; 0 = any 2xx
+    expected_keyword TEXT NOT NULL DEFAULT '',     -- 007: required response substring
+    last_check_error TEXT NOT NULL DEFAULT '',     -- 007: human-readable failure reason
+    cert_expires_at DATETIME,                      -- 007: TLS cert expiry (https only)
+    last_cert_warning_at DATETIME                  -- 007: cert-warning throttle
 );
 ```
 
@@ -160,7 +167,10 @@ Performs a check and updates status/code/latency, but deliberately does NOT touc
 | `/add <name> <url> [interval]` | Validate name (1–50 chars, `[A-Za-z0-9_-]`, not all-numeric, no leading/trailing `-`) and URL (http/https, dotted host). Interval ≥ 10s, default `1m`. `ErrDuplicate` → friendly message. On scheduler failure → warning reply (monitored after restart). Reply includes immediate first-check result. |
 | `/delete <name or id>` | Lookup by ID → name → URL. Remove job, then delete row. |
 | `/interval <name or id> <interval>` | `updateInterval` helper: update DB, then remove+re-add job; on job failure roll back DB and restore the old job. |
-| `/pause <name or id> [duration]` / `/resume <name or id>` | `setPaused` helper: persist flag (+ optional `paused_until`), remove/add job; resume failure rolls the flag back. Also available as an inline button in the detail view. |
+| `/pause <name or id> [duration]` / `/resume <name or id>` | `setPaused` helper: persist flag (+ optional `paused_until`), remove/add job; resume failure rolls the flag back. Also available as an inline button in the detail view. `all` applies to every endpoint. |
+| `/expect <name or id> <status\|any>` | Require an exact HTTP status (0 = any 2xx). |
+| `/keyword <name or id> <text\|off>` | Require a response-body substring. |
+| `/rename <name or id> <new-name>` | Rename; `ErrDuplicate` on name clash. |
 | `/list` | Summary + per-endpoint lines, inline buttons (detail → interval presets / confirmed delete, refresh). |
 | `/status` | Concurrent `CheckNow` for all endpoints; reply with HTTP code + latency per endpoint. |
 | `/help` | Static help text. |

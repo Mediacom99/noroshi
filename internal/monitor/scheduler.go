@@ -15,18 +15,19 @@ import (
 // Store defines the storage methods the scheduler needs.
 type Store interface {
 	GetEndpoint(ctx context.Context, id int64) (storage.Endpoint, error)
-	UpdateEndpointStatus(ctx context.Context, id int64, status string, statusCode int, latencyMs int64) error
-	RecordFailure(ctx context.Context, id int64, statusCode int, latencyMs int64, maxNotifications int, failureThreshold int) (storage.Endpoint, error)
-	RecordRecovery(ctx context.Context, id int64, statusCode int, latencyMs int64) (storage.Endpoint, error)
+	UpdateEndpointStatus(ctx context.Context, id int64, o storage.CheckOutcome) error
+	RecordFailure(ctx context.Context, id int64, o storage.CheckOutcome, maxNotifications int, failureThreshold int) (storage.Endpoint, error)
+	RecordRecovery(ctx context.Context, id int64, o storage.CheckOutcome) (storage.Endpoint, error)
 	ListExpiredPauses(ctx context.Context, now time.Time) ([]storage.Endpoint, error)
 	SetEndpointPaused(ctx context.Context, id int64, paused bool, until sql.NullTime) error
 	SetAlertMessageID(ctx context.Context, id int64, messageID int64) error
 	TouchLastNotified(ctx context.Context, id int64) error
+	TouchCertWarning(ctx context.Context, id int64) error
 }
 
 // Checker performs HTTP health checks.
 type Checker interface {
-	Check(ctx context.Context, url string) (statusCode int, latency time.Duration, err error)
+	Check(ctx context.Context, url string, opts CheckOptions) CheckResult
 }
 
 // Notifier sends failure and recovery notifications.
@@ -35,7 +36,14 @@ type Checker interface {
 type Notifier interface {
 	NotifyFailure(ctx context.Context, endpoint storage.Endpoint) (int64, error)
 	NotifyRecovery(ctx context.Context, endpoint storage.Endpoint, downtime time.Duration) error
+	NotifyCertExpiry(ctx context.Context, endpoint storage.Endpoint, daysLeft int) error
 }
+
+// certWarningDays is how close to expiry a certificate must be to warn.
+const certWarningDays = 14
+
+// certWarningCooldown is the minimum time between two cert warnings per endpoint.
+const certWarningCooldown = 24 * time.Hour
 
 // Scheduler manages periodic health checks using gocron.
 type Scheduler struct {
@@ -133,12 +141,17 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 		return
 	}
 
-	statusCode, latency, checkErr := s.checker.Check(ctx, ep.URL)
-	latencyMs := latency.Milliseconds()
+	res := s.checker.Check(ctx, ep.URL, CheckOptions{
+		ExpectedStatus: ep.ExpectedStatus,
+		Keyword:        ep.ExpectedKeyword,
+	})
+	outcome := outcomeFromResult(res)
+	latencyMs := res.Latency.Milliseconds()
+	statusCode := res.StatusCode
 
-	if checkErr != nil || statusCode < 200 || statusCode >= 300 {
+	if !res.Up {
 		// NOT_OK
-		updated, err := s.store.RecordFailure(ctx, endpointID, statusCode, latencyMs, s.maxFailureNotifications, s.failureThreshold)
+		updated, err := s.store.RecordFailure(ctx, endpointID, outcome, s.maxFailureNotifications, s.failureThreshold)
 		if err != nil {
 			slog.Error("scheduler: record failure", "id", endpointID, "error", err)
 			return
@@ -179,10 +192,12 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 				"consecutive_failures", updated.ConsecutiveFailures)
 		}
 	} else {
-		// OK
+		// OK — check certificate expiry while we're here.
+		s.maybeWarnCertExpiry(ctx, ep, res.CertExpiry)
+
 		if ep.Status != "ok" && ep.Status != "unknown" {
 			// Recovery
-			recovered, err := s.store.RecordRecovery(ctx, endpointID, statusCode, latencyMs)
+			recovered, err := s.store.RecordRecovery(ctx, endpointID, outcome)
 			if err != nil {
 				slog.Error("scheduler: record recovery", "id", endpointID, "error", err)
 				return
@@ -202,10 +217,54 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 			}
 		} else {
 			// Already OK, just update status
-			if err := s.store.UpdateEndpointStatus(ctx, endpointID, "ok", statusCode, latencyMs); err != nil {
+			if err := s.store.UpdateEndpointStatus(ctx, endpointID, outcome); err != nil {
 				slog.Error("scheduler: update status", "id", endpointID, "error", err)
 			}
 		}
+	}
+}
+
+// outcomeFromResult converts a checker result into the persisted outcome shape.
+func outcomeFromResult(res CheckResult) storage.CheckOutcome {
+	o := storage.CheckOutcome{
+		StatusCode: res.StatusCode,
+		LatencyMs:  res.Latency.Milliseconds(),
+		Reason:     res.Reason,
+	}
+	if !res.CertExpiry.IsZero() {
+		o.CertExpiry = sql.NullTime{Time: res.CertExpiry, Valid: true}
+	}
+	if res.Up {
+		o.Status = "ok"
+	} else {
+		o.Status = "not_ok"
+	}
+	return o
+}
+
+// maybeWarnCertExpiry sends at most one warning per certWarningCooldown when
+// the endpoint's certificate expires within certWarningDays.
+func (s *Scheduler) maybeWarnCertExpiry(ctx context.Context, ep storage.Endpoint, certExpiry time.Time) {
+	if certExpiry.IsZero() {
+		return
+	}
+	daysLeft := int(time.Until(certExpiry).Hours() / 24)
+	if daysLeft >= certWarningDays {
+		return
+	}
+	if ep.LastCertWarningAt.Valid && time.Since(ep.LastCertWarningAt.Time) < certWarningCooldown {
+		return
+	}
+
+	slog.Info("scheduler: certificate expiring",
+		"id", ep.ID, "name", ep.Name, "url", ep.URL,
+		"days_left", daysLeft, "expires_at", certExpiry.Format("2006-01-02"))
+	if err := s.notifier.NotifyCertExpiry(ctx, ep, daysLeft); err != nil {
+		slog.Error("scheduler: notify cert expiry", "id", ep.ID, "error", err)
+		return
+	}
+	if err := s.store.TouchCertWarning(ctx, ep.ID); err != nil {
+		slog.Error("scheduler: touch cert warning", "id", ep.ID, "error", err)
 	}
 }
 
@@ -224,20 +283,23 @@ func (s *Scheduler) CheckNow(ctx context.Context, endpointID int64) (storage.End
 		return ep, nil
 	}
 
-	statusCode, latency, checkErr := s.checker.Check(ctx, ep.URL)
-	latencyMs := latency.Milliseconds()
+	res := s.checker.Check(ctx, ep.URL, CheckOptions{
+		ExpectedStatus: ep.ExpectedStatus,
+		Keyword:        ep.ExpectedKeyword,
+	})
+	outcome := outcomeFromResult(res)
 
-	if checkErr != nil || statusCode < 200 || statusCode >= 300 {
-		if err := s.store.UpdateEndpointStatus(ctx, endpointID, "not_ok", statusCode, latencyMs); err != nil {
+	if !res.Up {
+		if err := s.store.UpdateEndpointStatus(ctx, endpointID, outcome); err != nil {
 			return storage.Endpoint{}, err
 		}
 	} else if ep.Status != "ok" {
 		// Transitioning to OK from a tracked outage: reset failure state.
-		if _, err := s.store.RecordRecovery(ctx, endpointID, statusCode, latencyMs); err != nil {
+		if _, err := s.store.RecordRecovery(ctx, endpointID, outcome); err != nil {
 			return storage.Endpoint{}, err
 		}
 	} else {
-		if err := s.store.UpdateEndpointStatus(ctx, endpointID, "ok", statusCode, latencyMs); err != nil {
+		if err := s.store.UpdateEndpointStatus(ctx, endpointID, outcome); err != nil {
 			return storage.Endpoint{}, err
 		}
 	}

@@ -201,7 +201,7 @@ func TestRecordFailure(t *testing.T) {
 	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 
 	// First failure
-	updated, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3, 1)
+	updated, err := store.RecordFailure(ctx, ep.ID, CheckOutcome{Status: "not_ok", StatusCode: 503, LatencyMs: 12, Reason: "HTTP 503"}, 3, 1)
 	if err != nil {
 		t.Fatalf("RecordFailure: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestRecordFailure(t *testing.T) {
 	}
 
 	// Second failure
-	updated2, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3, 1)
+	updated2, err := store.RecordFailure(ctx, ep.ID, CheckOutcome{Status: "not_ok", StatusCode: 503, LatencyMs: 12, Reason: "HTTP 503"}, 3, 1)
 	if err != nil {
 		t.Fatalf("RecordFailure 2: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestRecordFailureNotificationCap(t *testing.T) {
 
 	maxNotifications := 3
 	for range maxNotifications + 2 {
-		if _, err := store.RecordFailure(ctx, ep.ID, 503, 12, maxNotifications, 1); err != nil {
+		if _, err := store.RecordFailure(ctx, ep.ID, CheckOutcome{Status: "not_ok", StatusCode: 503, LatencyMs: 12, Reason: "HTTP 503"}, maxNotifications, 1); err != nil {
 			t.Fatalf("RecordFailure: %v", err)
 		}
 	}
@@ -267,14 +267,14 @@ func TestRecordRecovery(t *testing.T) {
 	ctx := context.Background()
 
 	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
-	if _, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3, 1); err != nil {
+	if _, err := store.RecordFailure(ctx, ep.ID, CheckOutcome{Status: "not_ok", StatusCode: 503, LatencyMs: 12, Reason: "HTTP 503"}, 3, 1); err != nil {
 		t.Fatalf("RecordFailure: %v", err)
 	}
-	if _, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3, 1); err != nil {
+	if _, err := store.RecordFailure(ctx, ep.ID, CheckOutcome{Status: "not_ok", StatusCode: 503, LatencyMs: 12, Reason: "HTTP 503"}, 3, 1); err != nil {
 		t.Fatalf("RecordFailure: %v", err)
 	}
 
-	recovered, err := store.RecordRecovery(ctx, ep.ID, 200, 12)
+	recovered, err := store.RecordRecovery(ctx, ep.ID, CheckOutcome{Status: "ok", StatusCode: 200, LatencyMs: 12})
 	if err != nil {
 		t.Fatalf("RecordRecovery: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestUpdateEndpointStatus(t *testing.T) {
 
 	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 
-	if err := store.UpdateEndpointStatus(ctx, ep.ID, "ok", 200, 12); err != nil {
+	if err := store.UpdateEndpointStatus(ctx, ep.ID, CheckOutcome{Status: "ok", StatusCode: 200, LatencyMs: 12}); err != nil {
 		t.Fatalf("UpdateEndpointStatus: %v", err)
 	}
 
@@ -415,7 +415,7 @@ func TestRecordFailureThreshold(t *testing.T) {
 
 	// Threshold 3: first two failures must not count as notifications.
 	for i := range 4 {
-		updated, err := store.RecordFailure(ctx, ep.ID, 503, 12, 3, 3)
+		updated, err := store.RecordFailure(ctx, ep.ID, CheckOutcome{Status: "not_ok", StatusCode: 503, LatencyMs: 12, Reason: "HTTP 503"}, 3, 3)
 		if err != nil {
 			t.Fatalf("RecordFailure %d: %v", i, err)
 		}
@@ -468,19 +468,19 @@ func TestRecordFailureSetsLastNotified(t *testing.T) {
 	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
 
 	// Below threshold (2): no notification, no last_notified_at.
-	updated, _ := store.RecordFailure(ctx, ep.ID, 503, 12, 3, 2)
+	updated, _ := store.RecordFailure(ctx, ep.ID, CheckOutcome{Status: "not_ok", StatusCode: 503, LatencyMs: 12, Reason: "HTTP 503"}, 3, 2)
 	if updated.LastNotifiedAt.Valid {
 		t.Error("LastNotifiedAt should not be set below the alert threshold")
 	}
 
 	// Threshold reached: notified.
-	updated, _ = store.RecordFailure(ctx, ep.ID, 503, 12, 3, 2)
+	updated, _ = store.RecordFailure(ctx, ep.ID, CheckOutcome{Status: "not_ok", StatusCode: 503, LatencyMs: 12, Reason: "HTTP 503"}, 3, 2)
 	if !updated.LastNotifiedAt.Valid {
 		t.Error("LastNotifiedAt should be set when a notification is counted")
 	}
 
 	// Recovery clears it.
-	recovered, err := store.RecordRecovery(ctx, ep.ID, 200, 12)
+	recovered, err := store.RecordRecovery(ctx, ep.ID, CheckOutcome{Status: "ok", StatusCode: 200, LatencyMs: 12})
 	if err != nil {
 		t.Fatalf("RecordRecovery: %v", err)
 	}
@@ -549,5 +549,68 @@ func TestTouchLastNotified(t *testing.T) {
 	updated, _ := store.GetEndpoint(ctx, ep.ID)
 	if !updated.LastNotifiedAt.Valid {
 		t.Error("LastNotifiedAt should be set")
+	}
+}
+
+func TestCheckOptionsAndRename(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+	store.AddEndpoint(ctx, "other", "https://other.com", 30)
+
+	if err := store.SetExpectedStatus(ctx, ep.ID, 200); err != nil {
+		t.Fatalf("SetExpectedStatus: %v", err)
+	}
+	if err := store.SetExpectedKeyword(ctx, ep.ID, "ok"); err != nil {
+		t.Fatalf("SetExpectedKeyword: %v", err)
+	}
+	updated, _ := store.GetEndpoint(ctx, ep.ID)
+	if updated.ExpectedStatus != 200 || updated.ExpectedKeyword != "ok" {
+		t.Errorf("got status=%d keyword=%q", updated.ExpectedStatus, updated.ExpectedKeyword)
+	}
+
+	if err := store.RenameEndpoint(ctx, ep.ID, "renamed"); err != nil {
+		t.Fatalf("RenameEndpoint: %v", err)
+	}
+	updated, _ = store.GetEndpoint(ctx, ep.ID)
+	if updated.Name != "renamed" {
+		t.Errorf("Name = %q, want renamed", updated.Name)
+	}
+
+	// Duplicate name → ErrDuplicate
+	if err := store.RenameEndpoint(ctx, ep.ID, "other"); !errors.Is(err, apperror.ErrDuplicate) {
+		t.Errorf("expected ErrDuplicate, got %v", err)
+	}
+
+	// Not found
+	if err := store.RenameEndpoint(ctx, 999, "x"); !errors.Is(err, apperror.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestLastCheckErrorPersisted(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+
+	updated, err := store.RecordFailure(ctx, ep.ID,
+		CheckOutcome{Status: "not_ok", StatusCode: 200, LatencyMs: 30, Reason: `keyword "ok" not found`}, 3, 1)
+	if err != nil {
+		t.Fatalf("RecordFailure: %v", err)
+	}
+	if updated.LastCheckError != `keyword "ok" not found` {
+		t.Errorf("LastCheckError = %q", updated.LastCheckError)
+	}
+
+	recovered, err := store.RecordRecovery(ctx, ep.ID, CheckOutcome{Status: "ok", StatusCode: 200, LatencyMs: 25})
+	if err != nil {
+		t.Fatalf("RecordRecovery: %v", err)
+	}
+	if recovered.LastCheckError != "" {
+		t.Errorf("LastCheckError should be cleared on recovery, got %q", recovered.LastCheckError)
 	}
 }

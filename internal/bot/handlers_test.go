@@ -816,3 +816,154 @@ func TestHandlePauseInvalidDuration(t *testing.T) {
 		t.Errorf("expected invalid-duration message, got: %s", mc.sentMessages[0])
 	}
 }
+
+func TestHandleExpect(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok"}
+
+	var setTo int
+	store := &mockStore{
+		getEndpointByNameFn: func(_ context.Context, _ string) (storage.Endpoint, error) {
+			return ep, nil
+		},
+		setExpectedStatusFn: func(_ context.Context, _ int64, code int) error {
+			setTo = code
+			return nil
+		},
+	}
+	b := newTestBot(store, &mockScheduler{})
+
+	tests := []struct {
+		payload      string
+		wantCode     int
+		wantContains string
+	}{
+		{"prod-api 200", 200, "exactly <b>HTTP 200</b>"},
+		{"prod-api any", 0, "any 2xx"},
+		{"prod-api 99", 0, "Invalid status code"},
+		{"", 0, "Usage: /expect"},
+	}
+	for _, tt := range tests {
+		setTo = -1
+		mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: tt.payload} }}
+		if err := b.handleExpect(mc); err != nil {
+			t.Fatalf("payload %q: %v", tt.payload, err)
+		}
+		if !strings.Contains(mc.sentMessages[0], tt.wantContains) {
+			t.Errorf("payload %q: message should contain %q, got: %s", tt.payload, tt.wantContains, mc.sentMessages[0])
+		}
+		if tt.wantContains == "exactly <b>HTTP 200</b>" && setTo != 200 {
+			t.Errorf("payload %q: SetExpectedStatus called with %d, want 200", tt.payload, setTo)
+		}
+	}
+}
+
+func TestHandleKeyword(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok"}
+
+	var setTo string
+	store := &mockStore{
+		getEndpointByNameFn: func(_ context.Context, _ string) (storage.Endpoint, error) {
+			return ep, nil
+		},
+		setExpectedKeywordFn: func(_ context.Context, _ int64, kw string) error {
+			setTo = kw
+			return nil
+		},
+	}
+	b := newTestBot(store, &mockScheduler{})
+
+	mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: `prod-api "status":"ok"`} }}
+	if err := b.handleKeyword(mc); err != nil {
+		t.Fatalf("handleKeyword: %v", err)
+	}
+	if setTo != `"status":"ok"` {
+		t.Errorf("keyword set to %q", setTo)
+	}
+	if !strings.Contains(mc.sentMessages[0], "must now contain") {
+		t.Errorf("got: %s", mc.sentMessages[0])
+	}
+
+	mc = &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: "prod-api off"} }}
+	if err := b.handleKeyword(mc); err != nil {
+		t.Fatalf("handleKeyword off: %v", err)
+	}
+	if setTo != "" {
+		t.Errorf("keyword should be cleared, got %q", setTo)
+	}
+	if !strings.Contains(mc.sentMessages[0], "disabled") {
+		t.Errorf("got: %s", mc.sentMessages[0])
+	}
+}
+
+func TestHandleRename(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok"}
+
+	var newName string
+	store := &mockStore{
+		getEndpointByNameFn: func(_ context.Context, name string) (storage.Endpoint, error) {
+			if name == "prod-api" {
+				return ep, nil
+			}
+			return storage.Endpoint{}, apperror.Wrap(apperror.ErrNotFound, fmt.Errorf("not found"))
+		},
+		renameEndpointFn: func(_ context.Context, _ int64, name string) error {
+			newName = name
+			return nil
+		},
+	}
+	b := newTestBot(store, &mockScheduler{})
+
+	mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: "prod-api api-v2"} }}
+	if err := b.handleRename(mc); err != nil {
+		t.Fatalf("handleRename: %v", err)
+	}
+	if newName != "api-v2" {
+		t.Errorf("renamed to %q, want api-v2", newName)
+	}
+	if !strings.Contains(mc.sentMessages[0], "Renamed") {
+		t.Errorf("got: %s", mc.sentMessages[0])
+	}
+
+	// Invalid new name rejected
+	mc = &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: "prod-api bad!name"} }}
+	if err := b.handleRename(mc); err != nil {
+		t.Fatalf("handleRename: %v", err)
+	}
+	if !strings.Contains(mc.sentMessages[0], "Name must") {
+		t.Errorf("expected validation error, got: %s", mc.sentMessages[0])
+	}
+}
+
+func TestHandlePauseAll(t *testing.T) {
+	eps := []storage.Endpoint{
+		{ID: 1, Name: "a", URL: "https://a.com", Status: "ok"},
+		{ID: 2, Name: "b", URL: "https://b.com", Status: "ok"},
+		{ID: 3, Name: "c", URL: "https://c.com", Status: "ok", Paused: true},
+	}
+	pausedIDs := map[int64]bool{}
+	store := &mockStore{
+		listEndpointsFn: func(_ context.Context) ([]storage.Endpoint, error) {
+			return eps, nil
+		},
+		setEndpointPausedFn: func(_ context.Context, id int64, paused bool, _ sql.NullTime) error {
+			pausedIDs[id] = paused
+			return nil
+		},
+	}
+	sched := &mockScheduler{}
+	b := newTestBot(store, sched)
+
+	mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: "all"} }}
+	if err := b.handlePause(mc); err != nil {
+		t.Fatalf("handlePause all: %v", err)
+	}
+	if len(pausedIDs) != 2 {
+		t.Errorf("paused %d endpoints, want 2 (one was already paused)", len(pausedIDs))
+	}
+	if sched.removeCalls != 2 {
+		t.Errorf("scheduler Remove calls = %d, want 2", sched.removeCalls)
+	}
+	if !strings.Contains(mc.sentMessages[0], "paused 2 endpoint(s)") {
+		t.Errorf("got: %s", mc.sentMessages[0])
+	}
+}
