@@ -23,6 +23,8 @@ const (
 	cbRefresh       = "ref"
 	cbCheckNow      = "chk"
 	cbPause         = "pse"
+	cbUptime        = "upt"
+	cbIncidents     = "inc"
 )
 
 func htmlEscape(s string) string {
@@ -313,6 +315,85 @@ func FormatStatus(endpoints []storage.Endpoint, slowThresholdMs int64) string {
 	return b.String()
 }
 
+// FormatUptime formats uptime statistics for 24h/7d/30d windows.
+func FormatUptime(ep storage.Endpoint, windows []string, stats []storage.WindowStats) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "📈 <b>%s — uptime</b>\n", htmlEscape(ep.Name))
+
+	hasData := false
+	for _, st := range stats {
+		if st.Total > 0 {
+			hasData = true
+			break
+		}
+	}
+	if !hasData {
+		b.WriteString("\nNo check history yet — stats appear after a few checks.")
+		return b.String()
+	}
+
+	for i, label := range windows {
+		st := stats[i]
+		if st.Total == 0 {
+			fmt.Fprintf(&b, "\n<b>%s:</b> no data", label)
+			continue
+		}
+		incidents := fmt.Sprintf("%d incidents", st.Incidents)
+		if st.Incidents == 1 {
+			incidents = "1 incident"
+		}
+		fmt.Fprintf(&b, "\n<b>%s:</b> %.2f%% · avg %.0fms · p95 %dms · %s",
+			label, st.Uptime(), st.AvgLatencyMs, st.P95LatencyMs, incidents)
+	}
+	return b.String()
+}
+
+// FormatIncidents formats the recent outage history for an endpoint.
+func FormatIncidents(ep storage.Endpoint, transitions []storage.CheckTransition) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "🕐 <b>%s — recent incidents</b>\n", htmlEscape(ep.Name))
+
+	// Pair down-flips with the following up-flip.
+	type incident struct {
+		start    time.Time
+		duration time.Duration // 0 = ongoing
+		code     int
+	}
+	var incidents []incident
+	for i, t := range transitions {
+		if t.Up {
+			continue
+		}
+		inc := incident{start: t.CheckedAt, code: t.StatusCode}
+		if i+1 < len(transitions) {
+			inc.duration = transitions[i+1].CheckedAt.Sub(t.CheckedAt)
+		}
+		incidents = append(incidents, inc)
+	}
+
+	if len(incidents) == 0 {
+		b.WriteString("\nNo incidents recorded. 🎉")
+		return b.String()
+	}
+
+	// Newest first, cap at 5.
+	for i := len(incidents) - 1; i >= 0 && i >= len(incidents)-5; i-- {
+		inc := incidents[i]
+		fmt.Fprintf(&b, "\n• %s", inc.start.UTC().Format("2006-01-02 15:04 UTC"))
+		if inc.duration > 0 {
+			fmt.Fprintf(&b, " · %s", FormatDuration(inc.duration))
+		} else {
+			b.WriteString(" · ongoing")
+		}
+		if inc.code > 0 {
+			fmt.Fprintf(&b, " · HTTP %d", inc.code)
+		} else {
+			b.WriteString(" · connection error")
+		}
+	}
+	return b.String()
+}
+
 // FormatEndpointDetail formats a single endpoint's detail view with action buttons.
 func FormatEndpointDetail(ep storage.Endpoint, slowThresholdMs int64) (string, *tele.ReplyMarkup) {
 	emoji := displayEmoji(ep, slowThresholdMs)
@@ -381,6 +462,10 @@ func FormatEndpointDetail(ep storage.Endpoint, slowThresholdMs int64) (string, *
 			menu.Data("🗑 Delete", cbDelete, id),
 		),
 		menu.Row(
+			menu.Data("📈 Uptime", cbUptime, id),
+			menu.Data("🕐 Incidents", cbIncidents, id),
+		),
+		menu.Row(
 			menu.Data("◀ Back to list", cbBack),
 		),
 	)
@@ -395,6 +480,8 @@ func FormatHelp() string {
 		"/add <code>&lt;name&gt; &lt;url&gt; [interval]</code> — Add endpoint (default 1m)\n" +
 		"/list — Dashboard with per-endpoint actions\n" +
 		"/status — Check everything right now\n" +
+		"/uptime <code>&lt;name or id&gt;</code> — Uptime %, latency stats\n" +
+		"/incidents <code>&lt;name or id&gt;</code> — Recent outages\n" +
 		"/pause <code>&lt;name or id&gt;</code> — Silence an endpoint\n" +
 		"/resume <code>&lt;name or id&gt;</code> — Resume monitoring\n\n" +
 		"<b>Manage</b>\n" +

@@ -967,3 +967,54 @@ func TestHandlePauseAll(t *testing.T) {
 		t.Errorf("got: %s", mc.sentMessages[0])
 	}
 }
+
+func TestHandleUptime(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok"}
+	store := &mockStore{
+		getEndpointByNameFn: func(_ context.Context, _ string) (storage.Endpoint, error) {
+			return ep, nil
+		},
+		getCheckStatsFn: func(_ context.Context, _ int64, since time.Time) (storage.WindowStats, error) {
+			return storage.WindowStats{Total: 100, Up: 99, AvgLatencyMs: 45, P95LatencyMs: 120, Incidents: 1}, nil
+		},
+	}
+	b := newTestBot(store, &mockScheduler{})
+
+	mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: "prod-api"} }}
+	if err := b.handleUptime(mc); err != nil {
+		t.Fatalf("handleUptime: %v", err)
+	}
+	for _, want := range []string{"prod-api", "99.00%", "p95 120ms", "1 incident"} {
+		if !strings.Contains(mc.sentMessages[0], want) {
+			t.Errorf("uptime message should contain %q, got: %s", want, mc.sentMessages[0])
+		}
+	}
+}
+
+func TestHandleIncidents(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok"}
+	now := time.Now()
+	store := &mockStore{
+		getEndpointByNameFn: func(_ context.Context, _ string) (storage.Endpoint, error) {
+			return ep, nil
+		},
+		getRecentTransitionsFn: func(_ context.Context, _ int64, _ int) ([]storage.CheckTransition, error) {
+			return []storage.CheckTransition{
+				{CheckedAt: now.Add(-2 * time.Hour), Up: true, StatusCode: 200},
+				{CheckedAt: now.Add(-time.Hour), Up: false, StatusCode: 503},
+				{CheckedAt: now.Add(-30 * time.Minute), Up: true, StatusCode: 200},
+			}, nil
+		},
+	}
+	b := newTestBot(store, &mockScheduler{})
+
+	mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: "prod-api"} }}
+	if err := b.handleIncidents(mc); err != nil {
+		t.Fatalf("handleIncidents: %v", err)
+	}
+	for _, want := range []string{"prod-api", "30m", "HTTP 503"} {
+		if !strings.Contains(mc.sentMessages[0], want) {
+			t.Errorf("incidents message should contain %q, got: %s", want, mc.sentMessages[0])
+		}
+	}
+}

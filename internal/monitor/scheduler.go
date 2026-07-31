@@ -23,6 +23,8 @@ type Store interface {
 	SetAlertMessageID(ctx context.Context, id int64, messageID int64) error
 	TouchLastNotified(ctx context.Context, id int64) error
 	TouchCertWarning(ctx context.Context, id int64) error
+	RecordCheck(ctx context.Context, endpointID int64, up bool, statusCode int, latencyMs int64) error
+	PruneChecks(ctx context.Context, olderThan time.Time) (int64, error)
 }
 
 // Checker performs HTTP health checks.
@@ -41,6 +43,9 @@ type Notifier interface {
 
 // certWarningDays is how close to expiry a certificate must be to warn.
 const certWarningDays = 14
+
+// checkRetentionDays is how long check history is kept for stats.
+const checkRetentionDays = 30
 
 // certWarningCooldown is the minimum time between two cert warnings per endpoint.
 const certWarningCooldown = 24 * time.Hour
@@ -86,6 +91,17 @@ func NewScheduler(ctx context.Context, store Store, checker Checker, notifier No
 	)
 	if err != nil {
 		return nil, fmt.Errorf("add resume-expired job: %w", err)
+	}
+
+	// Housekeeping: prune check history older than the retention window.
+	_, err = cron.NewJob(
+		gocron.DurationJob(time.Hour),
+		gocron.NewTask(s.pruneOldChecks),
+		gocron.WithTags("internal-prune-checks"),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("add prune-checks job: %w", err)
 	}
 
 	return s, nil
@@ -148,6 +164,7 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 	outcome := outcomeFromResult(res)
 	latencyMs := res.Latency.Milliseconds()
 	statusCode := res.StatusCode
+	s.recordCheck(ctx, endpointID, res)
 
 	if !res.Up {
 		// NOT_OK
@@ -288,6 +305,7 @@ func (s *Scheduler) CheckNow(ctx context.Context, endpointID int64) (storage.End
 		Keyword:        ep.ExpectedKeyword,
 	})
 	outcome := outcomeFromResult(res)
+	s.recordCheck(ctx, endpointID, res)
 
 	if !res.Up {
 		if err := s.store.UpdateEndpointStatus(ctx, endpointID, outcome); err != nil {
@@ -330,5 +348,25 @@ func (s *Scheduler) resumeExpiredPauses() {
 			continue
 		}
 		slog.Info("scheduler: timed pause ended", "id", ep.ID, "name", ep.Name)
+	}
+}
+
+// recordCheck appends a result to the check history (stats). Failures are
+// logged but never block the monitoring flow.
+func (s *Scheduler) recordCheck(ctx context.Context, endpointID int64, res CheckResult) {
+	if err := s.store.RecordCheck(ctx, endpointID, res.Up, res.StatusCode, res.Latency.Milliseconds()); err != nil {
+		slog.Error("scheduler: record check", "id", endpointID, "error", err)
+	}
+}
+
+// pruneOldChecks deletes check history beyond the retention window.
+func (s *Scheduler) pruneOldChecks() {
+	deleted, err := s.store.PruneChecks(s.ctx, time.Now().UTC().AddDate(0, 0, -checkRetentionDays))
+	if err != nil {
+		slog.Error("scheduler: prune checks", "error", err)
+		return
+	}
+	if deleted > 0 {
+		slog.Info("scheduler: pruned check history", "deleted", deleted)
 	}
 }

@@ -25,6 +25,8 @@ func (b *Bot) registerHandlers() {
 	b.bot.Handle("/interval", b.guarded(b.handleInterval))
 	b.bot.Handle("/pause", b.guarded(b.handlePause))
 	b.bot.Handle("/resume", b.guarded(b.handleResume))
+	b.bot.Handle("/uptime", b.guarded(b.handleUptime))
+	b.bot.Handle("/incidents", b.guarded(b.handleIncidents))
 	b.bot.Handle("/expect", b.guarded(b.handleExpect))
 	b.bot.Handle("/keyword", b.guarded(b.handleKeyword))
 	b.bot.Handle("/rename", b.guarded(b.handleRename))
@@ -483,4 +485,78 @@ func (b *Bot) handleRename(c tele.Context) error {
 	}
 
 	return c.Send(fmt.Sprintf("✅ Renamed <b>%s</b> → <b>%s</b>", htmlEscape(ep.Name), htmlEscape(newName)))
+}
+
+// uptimeWindows are the stats windows shown by /uptime.
+var uptimeWindows = []struct {
+	label string
+	dur   time.Duration
+}{
+	{"24h", 24 * time.Hour},
+	{"7d", 7 * 24 * time.Hour},
+	{"30d", 30 * 24 * time.Hour},
+}
+
+func (b *Bot) handleUptime(c tele.Context) error {
+	ep, ok := b.findEndpointArg(c, "/uptime")
+	if !ok {
+		return nil
+	}
+	stats, err := b.collectStats(ep.ID)
+	if err != nil {
+		slog.Error("collect stats", "id", ep.ID, "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+	labels := make([]string, len(uptimeWindows))
+	for i, w := range uptimeWindows {
+		labels[i] = w.label
+	}
+	return c.Send(FormatUptime(ep, labels, stats), tele.NoPreview)
+}
+
+func (b *Bot) handleIncidents(c tele.Context) error {
+	ep, ok := b.findEndpointArg(c, "/incidents")
+	if !ok {
+		return nil
+	}
+	transitions, err := b.store.GetRecentTransitions(b.rootCtx, ep.ID, 20)
+	if err != nil {
+		slog.Error("get transitions", "id", ep.ID, "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+	return c.Send(FormatIncidents(ep, transitions), tele.NoPreview)
+}
+
+// collectStats gathers WindowStats for all uptime windows.
+func (b *Bot) collectStats(endpointID int64) ([]storage.WindowStats, error) {
+	stats := make([]storage.WindowStats, len(uptimeWindows))
+	for i, w := range uptimeWindows {
+		st, err := b.store.GetCheckStats(b.rootCtx, endpointID, time.Now().UTC().Add(-w.dur))
+		if err != nil {
+			return nil, err
+		}
+		stats[i] = st
+	}
+	return stats, nil
+}
+
+// findEndpointArg parses the first command argument and resolves the endpoint,
+// replying to the user on usage errors. ok=false means a reply was already sent.
+func (b *Bot) findEndpointArg(c tele.Context, cmd string) (storage.Endpoint, bool) {
+	arg := strings.TrimSpace(c.Message().Payload)
+	if arg == "" {
+		c.Send(fmt.Sprintf("Usage: %s <code>&lt;name or id&gt;</code>", cmd))
+		return storage.Endpoint{}, false
+	}
+	ep, err := b.findEndpoint(arg)
+	if err != nil {
+		if errors.Is(err, apperror.ErrNotFound) {
+			c.Send("Endpoint not found.")
+		} else {
+			slog.Error("find endpoint", "error", err)
+			c.Send("Internal error. Please try again.")
+		}
+		return storage.Endpoint{}, false
+	}
+	return ep, true
 }

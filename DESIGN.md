@@ -28,7 +28,7 @@ noroshi/
 │   │   ├── scheduler.go                 # gocron scheduler, checkAndNotify, CheckNow
 │   │   └── *_test.go
 │   └── storage/
-│       ├── migrations/                  # goose migrations 001–007
+│       ├── migrations/                  # goose migrations 001–008
 │       ├── models.go                    # Endpoint struct
 │       ├── store.go                     # OpenDB, RunMigrations, SQLiteStore
 │       └── store_test.go
@@ -118,9 +118,21 @@ CREATE TABLE endpoints (
     cert_expires_at DATETIME,                      -- 007: TLS cert expiry (https only)
     last_cert_warning_at DATETIME                  -- 007: cert-warning throttle
 );
+
+-- 008: per-check history powering /uptime, /incidents, and badges
+CREATE TABLE checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    endpoint_id INTEGER NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+    up INTEGER NOT NULL,
+    status_code INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    checked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_checks_endpoint_time ON checks (endpoint_id, checked_at);
 ```
 
 - `name` and `url` are both UNIQUE.
+- Every check (scheduled or ad-hoc) appends one `checks` row. An hourly housekeeping job prunes rows older than 30 days. SQLite compares DATETIMEs as strings — all stored times and query parameters are normalized to UTC.
 - `paused` endpoints keep their row and config but have no gocron job; they are skipped at startup, in `checkAndNotify`, and in `CheckNow`. A timed pause sets `paused_until`; a per-minute gocron housekeeping job (`resumeExpiredPauses`) resumes expired pauses.
 - `failure_notifications_sent` only counts failures at or beyond `FAILURE_THRESHOLD` and is capped at `MAX_FAILURE_NOTIFICATIONS` by `RecordFailure` — it always reflects notifications actually sent.
 - `last_failure_at` is set on the first failure of an outage and cleared on recovery; `RecordRecovery` returns the endpoint with the pre-reset value so downtime can be computed.
@@ -171,6 +183,8 @@ Performs a check and updates status/code/latency, but deliberately does NOT touc
 | `/expect <name or id> <status\|any>` | Require an exact HTTP status (0 = any 2xx). |
 | `/keyword <name or id> <text\|off>` | Require a response-body substring. |
 | `/rename <name or id> <new-name>` | Rename; `ErrDuplicate` on name clash. |
+| `/uptime <name or id>` | `GetCheckStats` over 24h/7d/30d: uptime %, avg + p95 latency (SQL offset trick), incident count (up→down transitions via `LAG`). Also a detail-view button. |
+| `/incidents <name or id>` | `GetRecentTransitions` composed into outages (start, duration or ongoing, HTTP code), newest first, max 5. Also a detail-view button. |
 | `/list` | Summary + per-endpoint lines, inline buttons (detail → interval presets / confirmed delete, refresh). |
 | `/status` | Concurrent `CheckNow` for all endpoints; reply with HTTP code + latency per endpoint. |
 | `/help` | Static help text. |
@@ -188,6 +202,8 @@ All user-provided content is HTML-escaped; messages use `ParseMode: HTML`. The `
 ## Health Endpoint
 
 `GET /healthz` on `HEALTH_PORT` → `200 {"status":"ok"}`. Server has `ReadHeaderTimeout: 5s`. Docker `HEALTHCHECK` curls `http://localhost:${HEALTH_PORT:-8080}/healthz`.
+
+`GET /badge/<name>.svg` → shields-style SVG status badge (up/down/paused/unknown colors), `Cache-Control: no-cache`. Public by design — meant for READMEs and dashboards.
 
 ## Docker & Release
 

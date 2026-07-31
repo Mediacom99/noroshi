@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -90,7 +91,7 @@ func main() {
 	teleBot.Start()
 
 	// Start health server
-	healthSrv := startHealthServer(cfg.HealthPort)
+	healthSrv := startHealthServer(cfg.HealthPort, store)
 
 	// Wait for shutdown signal
 	<-ctx.Done()
@@ -110,12 +111,36 @@ func main() {
 	slog.Info("shutdown complete")
 }
 
-func startHealthServer(port int) *http.Server {
+func startHealthServer(port int, store *storage.SQLiteStore) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	// Shields-style status badge: /badge/<name>.svg
+	mux.HandleFunc("GET /badge/{name}", func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimSuffix(r.PathValue("name"), ".svg")
+		ep, err := store.GetEndpointByName(r.Context(), name)
+		if err != nil {
+			w.Header().Set("Content-Type", "image/svg+xml")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(badgeSVG(name, "not found", "#9f9f9f")))
+			return
+		}
+		label, color := "unknown", "#dfb317"
+		switch {
+		case ep.Paused:
+			label, color = "paused", "#9f9f9f"
+		case ep.Status == "ok":
+			label, color = "up", "#4c1"
+		case ep.Status == "not_ok":
+			label, color = "down", "#e05d44"
+		}
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		_, _ = w.Write([]byte(badgeSVG(ep.Name, label, color)))
 	})
 
 	srv := &http.Server{
@@ -132,6 +157,33 @@ func startHealthServer(port int) *http.Server {
 	}()
 
 	return srv
+}
+
+// badgeSVG renders a minimal shields-style two-segment status badge.
+func badgeSVG(label, value, color string) string {
+	lw := 6*len(label) + 16
+	vw := 6*len(value) + 16
+	total := lw + vw
+	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="20" role="img" aria-label="%s: %s">`+
+		`<rect width="%d" height="20" rx="3" fill="#555"/>`+
+		`<rect x="%d" width="%d" height="20" rx="3" fill="%s"/>`+
+		`<rect x="%d" width="4" height="20" fill="%s"/>`+
+		`<g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,sans-serif" font-size="11">`+
+		`<text x="%d" y="14">%s</text>`+
+		`<text x="%d" y="14">%s</text>`+
+		`</g></svg>`,
+		total, htmlEscapeAttr(label), htmlEscapeAttr(value),
+		total,
+		lw, vw, color,
+		lw, color,
+		lw/2, htmlEscapeAttr(label),
+		lw+vw/2, htmlEscapeAttr(value),
+	)
+}
+
+func htmlEscapeAttr(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
+	return r.Replace(s)
 }
 
 func setupLogging(level string) {

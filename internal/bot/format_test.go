@@ -204,9 +204,9 @@ func TestFormatEndpointDetail(t *testing.T) {
 	if markup == nil {
 		t.Fatal("should have markup")
 	}
-	// Row 1: check now + pause, Row 2: interval + delete, Row 3: back
-	if len(markup.InlineKeyboard) != 3 {
-		t.Errorf("expected 3 keyboard rows, got %d", len(markup.InlineKeyboard))
+	// Rows: check now + pause / interval + delete / uptime + incidents / back
+	if len(markup.InlineKeyboard) != 4 {
+		t.Errorf("expected 4 keyboard rows, got %d", len(markup.InlineKeyboard))
 	}
 }
 
@@ -393,5 +393,36 @@ func TestFormatEndpointDetailTimedPause(t *testing.T) {
 	text, _ := FormatEndpointDetail(ep, 0)
 	if !strings.Contains(text, "paused ·") || !strings.Contains(text, "left") {
 		t.Errorf("detail should show pause countdown, got: %s", text)
+	}
+}
+
+func TestFormatUptimeNoData(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api"}
+	msg := FormatUptime(ep, []string{"24h", "7d", "30d"}, []storage.WindowStats{{}, {}, {}})
+	if !strings.Contains(msg, "No check history yet") {
+		t.Errorf("got: %s", msg)
+	}
+}
+
+func TestFormatIncidentsEmpty(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api"}
+	msg := FormatIncidents(ep, nil)
+	if !strings.Contains(msg, "No incidents recorded") {
+		t.Errorf("got: %s", msg)
+	}
+}
+
+func TestFormatIncidentsOngoing(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api"}
+	now := time.Now()
+	msg := FormatIncidents(ep, []storage.CheckTransition{
+		{CheckedAt: now.Add(-time.Hour), Up: true, StatusCode: 200},
+		{CheckedAt: now.Add(-10 * time.Minute), Up: false, StatusCode: 0},
+	})
+	if !strings.Contains(msg, "ongoing") {
+		t.Errorf("should show ongoing incident, got: %s", msg)
+	}
+	if !strings.Contains(msg, "connection error") {
+		t.Errorf("should show connection error for code 0, got: %s", msg)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"noroshi/internal/apperror"
 	"noroshi/internal/storage"
@@ -855,5 +856,29 @@ func TestHandlePauseCallback(t *testing.T) {
 	}
 	if len(mc.editedMessages) == 0 {
 		t.Fatal("expected the detail view to be re-rendered")
+	}
+}
+
+func TestHandleUptimeCallback(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok"}
+	store := &mockStore{
+		getEndpointFn: func(_ context.Context, _ int64) (storage.Endpoint, error) {
+			return ep, nil
+		},
+		getCheckStatsFn: func(_ context.Context, _ int64, _ time.Time) (storage.WindowStats, error) {
+			return storage.WindowStats{Total: 50, Up: 50, AvgLatencyMs: 30, P95LatencyMs: 80}, nil
+		},
+	}
+	b := newTestBot(store, &mockScheduler{})
+
+	mc := &mockContext{callbackFn: func() *tele.Callback { return &tele.Callback{Data: "1"} }}
+	if err := b.handleUptimeCallback(mc); err != nil {
+		t.Fatalf("handleUptimeCallback: %v", err)
+	}
+	if len(mc.editedMessages) == 0 {
+		t.Fatal("expected the message to be edited with uptime stats")
+	}
+	if !strings.Contains(mc.editedMessages[0], "100.00%") {
+		t.Errorf("got: %s", mc.editedMessages[0])
 	}
 }

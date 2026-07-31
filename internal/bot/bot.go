@@ -26,6 +26,8 @@ type Store interface {
 	SetExpectedStatus(ctx context.Context, id int64, code int) error
 	SetExpectedKeyword(ctx context.Context, id int64, keyword string) error
 	RenameEndpoint(ctx context.Context, id int64, newName string) error
+	GetCheckStats(ctx context.Context, endpointID int64, since time.Time) (storage.WindowStats, error)
+	GetRecentTransitions(ctx context.Context, endpointID int64, limit int) ([]storage.CheckTransition, error)
 }
 
 // Scheduler defines the scheduling methods the bot needs.
@@ -103,6 +105,8 @@ func (b *Bot) registerCommands() {
 		{Text: "delete", Description: "Remove an endpoint"},
 		{Text: "interval", Description: "Change check interval"},
 		{Text: "status", Description: "Check all endpoints now"},
+		{Text: "uptime", Description: "Uptime stats: /uptime <name>"},
+		{Text: "incidents", Description: "Outage history: /incidents <name>"},
 		{Text: "pause", Description: "Pause monitoring an endpoint"},
 		{Text: "resume", Description: "Resume monitoring an endpoint"},
 		{Text: "expect", Description: "Require an exact HTTP status"},

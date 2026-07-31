@@ -522,13 +522,13 @@ func TestListExpiredPauses(t *testing.T) {
 	ep2, _ := store.AddEndpoint(ctx, "future", "https://b.com", 30)
 	ep3, _ := store.AddEndpoint(ctx, "indefinite", "https://c.com", 30)
 
-	past := sql.NullTime{Time: time.Now().Add(-time.Minute), Valid: true}
-	future := sql.NullTime{Time: time.Now().Add(time.Hour), Valid: true}
+	past := sql.NullTime{Time: time.Now().Add(-time.Minute), Valid: true} // local tz: store must normalize
+	future := sql.NullTime{Time: time.Now().UTC().Add(time.Hour), Valid: true}
 	store.SetEndpointPaused(ctx, ep1.ID, true, past)
 	store.SetEndpointPaused(ctx, ep2.ID, true, future)
 	store.SetEndpointPaused(ctx, ep3.ID, true, sql.NullTime{})
 
-	expired, err := store.ListExpiredPauses(ctx, time.Now())
+	expired, err := store.ListExpiredPauses(ctx, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("ListExpiredPauses: %v", err)
 	}
@@ -612,5 +612,81 @@ func TestLastCheckErrorPersisted(t *testing.T) {
 	}
 	if recovered.LastCheckError != "" {
 		t.Errorf("LastCheckError should be cleared on recovery, got %q", recovered.LastCheckError)
+	}
+}
+
+func TestCheckStatsAndPrune(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+
+	// 10 checks: 8 up, 2 down (one incident: up→down), latencies 10..100.
+	for i := 1; i <= 10; i++ {
+		up := true
+		if i == 5 || i == 6 {
+			up = false
+		}
+		if err := store.RecordCheck(ctx, ep.ID, up, 200, int64(i*10)); err != nil {
+			t.Fatalf("RecordCheck: %v", err)
+		}
+	}
+
+	stats, err := store.GetCheckStats(ctx, ep.ID, time.Now().UTC().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("GetCheckStats: %v", err)
+	}
+	if stats.Total != 10 || stats.Up != 8 {
+		t.Errorf("Total=%d Up=%d, want 10/8", stats.Total, stats.Up)
+	}
+	if stats.Uptime() != 80 {
+		t.Errorf("Uptime = %.1f, want 80", stats.Uptime())
+	}
+	if stats.Incidents != 1 {
+		t.Errorf("Incidents = %d, want 1", stats.Incidents)
+	}
+	if stats.AvgLatencyMs != 55 {
+		t.Errorf("AvgLatencyMs = %.1f, want 55", stats.AvgLatencyMs)
+	}
+	if stats.P95LatencyMs < 90 {
+		t.Errorf("P95LatencyMs = %d, want >= 90", stats.P95LatencyMs)
+	}
+
+	// Window excluding all checks.
+	stats, err = store.GetCheckStats(ctx, ep.ID, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("GetCheckStats empty: %v", err)
+	}
+	if stats.Total != 0 {
+		t.Errorf("Total = %d, want 0", stats.Total)
+	}
+
+	// Transitions: first-up, down at i=5, up at i=7 → 3 flips.
+	transitions, err := store.GetRecentTransitions(ctx, ep.ID, 10)
+	if err != nil {
+		t.Fatalf("GetRecentTransitions: %v", err)
+	}
+	if len(transitions) != 3 {
+		t.Fatalf("transitions = %d, want 3", len(transitions))
+	}
+	if !transitions[0].Up || transitions[1].Up || !transitions[2].Up {
+		t.Errorf("unexpected transition sequence: %+v", transitions)
+	}
+
+	// Prune: nothing older than the future, everything older than the past.
+	deleted, err := store.PruneChecks(ctx, time.Now().Add(-time.Hour)) // non-UTC on purpose: store must normalize
+	if err != nil {
+		t.Fatalf("PruneChecks: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("deleted = %d, want 0", deleted)
+	}
+	deleted, err = store.PruneChecks(ctx, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("PruneChecks: %v", err)
+	}
+	if deleted != 10 {
+		t.Errorf("deleted = %d, want 10", deleted)
 	}
 }

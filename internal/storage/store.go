@@ -228,6 +228,10 @@ func (s *SQLiteStore) UpdateEndpointInterval(ctx context.Context, id int64, inte
 }
 
 func (s *SQLiteStore) SetEndpointPaused(ctx context.Context, id int64, paused bool, until sql.NullTime) error {
+	// SQLite compares DATETIMEs as strings — normalize to UTC so offsets never mix.
+	if until.Valid {
+		until.Time = until.Time.UTC()
+	}
 	result, err := s.db.ExecContext(ctx,
 		"UPDATE endpoints SET paused = ?, paused_until = ? WHERE id = ?",
 		paused, until, id,
@@ -247,6 +251,7 @@ func (s *SQLiteStore) SetEndpointPaused(ctx context.Context, id int64, paused bo
 
 // ListExpiredPauses returns paused endpoints whose paused_until has passed.
 func (s *SQLiteStore) ListExpiredPauses(ctx context.Context, now time.Time) ([]Endpoint, error) {
+	now = now.UTC()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, name, url, interval_seconds, status, last_checked_at, last_failure_at,
 		        consecutive_failures, failure_notifications_sent, last_status_code, last_latency_ms,
@@ -440,4 +445,115 @@ func (s *SQLiteStore) updateColumn(ctx context.Context, id int64, column string,
 
 func isUniqueViolation(err error) bool {
 	return strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+// RecordCheck appends one check result to the history table.
+func (s *SQLiteStore) RecordCheck(ctx context.Context, endpointID int64, up bool, statusCode int, latencyMs int64) error {
+	_, err := s.db.ExecContext(ctx,
+		"INSERT INTO checks (endpoint_id, up, status_code, latency_ms, checked_at) VALUES (?, ?, ?, ?, ?)",
+		endpointID, up, statusCode, latencyMs, time.Now().UTC(),
+	)
+	if err != nil {
+		return apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	return nil
+}
+
+// GetCheckStats aggregates the check history for an endpoint since a given time.
+func (s *SQLiteStore) GetCheckStats(ctx context.Context, endpointID int64, since time.Time) (WindowStats, error) {
+	// SQLite compares DATETIMEs as strings — normalize to UTC so offsets never mix.
+	since = since.UTC()
+	var stats WindowStats
+	var avg sql.NullFloat64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(up), 0), AVG(latency_ms)
+		 FROM checks WHERE endpoint_id = ? AND checked_at >= ?`,
+		endpointID, since,
+	).Scan(&stats.Total, &stats.Up, &avg)
+	if err != nil {
+		return WindowStats{}, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	stats.AvgLatencyMs = avg.Float64
+
+	if stats.Total > 0 {
+		// p95 via ordered offset — avoids loading all latencies into memory.
+		err = s.db.QueryRowContext(ctx,
+			`SELECT latency_ms FROM checks
+			 WHERE endpoint_id = ? AND checked_at >= ?
+			 ORDER BY latency_ms
+			 LIMIT 1 OFFSET (SELECT (COUNT(*) * 95) / 100 FROM checks
+			                 WHERE endpoint_id = ? AND checked_at >= ?)`,
+			endpointID, since, endpointID, since,
+		).Scan(&stats.P95LatencyMs)
+		if err != nil {
+			return WindowStats{}, apperror.Wrap(apperror.ErrDatabase, err)
+		}
+
+		// Incidents: transitions from up to down within the window.
+		err = s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM (
+				SELECT up, LAG(up) OVER (ORDER BY checked_at, id) AS prev_up
+				FROM checks WHERE endpoint_id = ? AND checked_at >= ?
+			) WHERE up = 0 AND prev_up = 1`,
+			endpointID, since,
+		).Scan(&stats.Incidents)
+		if err != nil {
+			return WindowStats{}, apperror.Wrap(apperror.ErrDatabase, err)
+		}
+	}
+
+	return stats, nil
+}
+
+// GetRecentTransitions returns the most recent up/down state flips for an
+// endpoint, newest last. limit applies to the number of flips returned.
+func (s *SQLiteStore) GetRecentTransitions(ctx context.Context, endpointID int64, limit int) ([]CheckTransition, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT checked_at, up, status_code FROM (
+			SELECT checked_at, up, status_code,
+			       LAG(up) OVER (ORDER BY checked_at, id) AS prev_up
+			FROM checks WHERE endpoint_id = ?
+		) WHERE prev_up IS NULL OR up != prev_up
+		ORDER BY checked_at DESC LIMIT ?`,
+		endpointID, limit,
+	)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	defer rows.Close()
+
+	var transitions []CheckTransition
+	for rows.Next() {
+		var t CheckTransition
+		if err := rows.Scan(&t.CheckedAt, &t.Up, &t.StatusCode); err != nil {
+			return nil, apperror.Wrap(apperror.ErrDatabase, err)
+		}
+		transitions = append(transitions, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+
+	// Restore chronological order (query fetched newest first).
+	for i, j := 0, len(transitions)-1; i < j; i, j = i+1, j-1 {
+		transitions[i], transitions[j] = transitions[j], transitions[i]
+	}
+	return transitions, nil
+}
+
+// PruneChecks deletes check history older than the given time.
+// Returns the number of deleted rows.
+func (s *SQLiteStore) PruneChecks(ctx context.Context, olderThan time.Time) (int64, error) {
+	olderThan = olderThan.UTC()
+	result, err := s.db.ExecContext(ctx,
+		"DELETE FROM checks WHERE checked_at < ?", olderThan,
+	)
+	if err != nil {
+		return 0, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	return n, nil
 }

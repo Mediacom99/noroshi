@@ -21,6 +21,8 @@ func (b *Bot) registerCallbacks() {
 	b.bot.Handle(&tele.Btn{Unique: cbRefresh}, b.guarded(b.handleRefreshCallback))
 	b.bot.Handle(&tele.Btn{Unique: cbCheckNow}, b.guarded(b.handleCheckNowCallback))
 	b.bot.Handle(&tele.Btn{Unique: cbPause}, b.guarded(b.handlePauseCallback))
+	b.bot.Handle(&tele.Btn{Unique: cbUptime}, b.guarded(b.handleUptimeCallback))
+	b.bot.Handle(&tele.Btn{Unique: cbIncidents}, b.guarded(b.handleIncidentsCallback))
 }
 
 // handleDetailCallback shows the detail view for a single endpoint.
@@ -244,4 +246,57 @@ func (b *Bot) editEndpointList(c tele.Context) error {
 		return c.Edit(text)
 	}
 	return c.Edit(text, markup, tele.NoPreview)
+}
+
+// handleUptimeCallback shows the uptime stats view for one endpoint.
+func (b *Bot) handleUptimeCallback(c tele.Context) error {
+	epID, err := strconv.ParseInt(c.Callback().Data, 10, 64)
+	if err != nil {
+		return c.Respond(&tele.CallbackResponse{Text: "Invalid endpoint."})
+	}
+
+	ep, err := b.store.GetEndpoint(b.rootCtx, epID)
+	if err != nil {
+		return c.Respond(&tele.CallbackResponse{Text: "Endpoint not found."})
+	}
+
+	stats, err := b.collectStats(ep.ID)
+	if err != nil {
+		slog.Error("collect stats", "id", ep.ID, "error", err)
+		return c.Respond(&tele.CallbackResponse{Text: "Error loading stats."})
+	}
+
+	labels := make([]string, len(uptimeWindows))
+	for i, w := range uptimeWindows {
+		labels[i] = w.label
+	}
+
+	menu := &tele.ReplyMarkup{}
+	menu.Inline(menu.Row(menu.Data("◀ Back", cbDetail, strconv.FormatInt(ep.ID, 10))))
+	_ = c.Edit(FormatUptime(ep, labels, stats), menu, tele.NoPreview)
+	return c.Respond()
+}
+
+// handleIncidentsCallback shows the incident history view for one endpoint.
+func (b *Bot) handleIncidentsCallback(c tele.Context) error {
+	epID, err := strconv.ParseInt(c.Callback().Data, 10, 64)
+	if err != nil {
+		return c.Respond(&tele.CallbackResponse{Text: "Invalid endpoint."})
+	}
+
+	ep, err := b.store.GetEndpoint(b.rootCtx, epID)
+	if err != nil {
+		return c.Respond(&tele.CallbackResponse{Text: "Endpoint not found."})
+	}
+
+	transitions, err := b.store.GetRecentTransitions(b.rootCtx, ep.ID, 20)
+	if err != nil {
+		slog.Error("get transitions", "id", ep.ID, "error", err)
+		return c.Respond(&tele.CallbackResponse{Text: "Error loading incidents."})
+	}
+
+	menu := &tele.ReplyMarkup{}
+	menu.Inline(menu.Row(menu.Data("◀ Back", cbDetail, strconv.FormatInt(ep.ID, 10))))
+	_ = c.Edit(FormatIncidents(ep, transitions), menu, tele.NoPreview)
+	return c.Respond()
 }

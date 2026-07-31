@@ -15,8 +15,9 @@ import (
 
 // mockStore implements Store for testing.
 type mockStore struct {
-	mu        sync.Mutex
-	endpoints map[int64]storage.Endpoint
+	mu             sync.Mutex
+	endpoints      map[int64]storage.Endpoint
+	recordedChecks int
 }
 
 func newMockStore() *mockStore {
@@ -129,6 +130,17 @@ func (m *mockStore) SetAlertMessageID(_ context.Context, id int64, messageID int
 	ep.AlertMessageID = messageID
 	m.endpoints[id] = ep
 	return nil
+}
+
+func (m *mockStore) RecordCheck(_ context.Context, endpointID int64, up bool, statusCode int, latencyMs int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recordedChecks++
+	return nil
+}
+
+func (m *mockStore) PruneChecks(_ context.Context, olderThan time.Time) (int64, error) {
+	return 0, nil
 }
 
 func (m *mockStore) TouchCertWarning(_ context.Context, id int64) error {

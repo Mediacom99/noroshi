@@ -109,6 +109,8 @@ type mockStore struct {
 	setExpectedStatusFn      func(ctx context.Context, id int64, code int) error
 	setExpectedKeywordFn     func(ctx context.Context, id int64, keyword string) error
 	renameEndpointFn         func(ctx context.Context, id int64, newName string) error
+	getCheckStatsFn          func(ctx context.Context, endpointID int64, since time.Time) (storage.WindowStats, error)
+	getRecentTransitionsFn   func(ctx context.Context, endpointID int64, limit int) ([]storage.CheckTransition, error)
 }
 
 func (m *mockStore) AddEndpoint(ctx context.Context, name, url string, interval int) (storage.Endpoint, error) {
@@ -186,6 +188,20 @@ func (m *mockStore) RenameEndpoint(ctx context.Context, id int64, newName string
 		return m.renameEndpointFn(ctx, id, newName)
 	}
 	return nil
+}
+
+func (m *mockStore) GetCheckStats(ctx context.Context, endpointID int64, since time.Time) (storage.WindowStats, error) {
+	if m.getCheckStatsFn != nil {
+		return m.getCheckStatsFn(ctx, endpointID, since)
+	}
+	return storage.WindowStats{}, nil
+}
+
+func (m *mockStore) GetRecentTransitions(ctx context.Context, endpointID int64, limit int) ([]storage.CheckTransition, error) {
+	if m.getRecentTransitionsFn != nil {
+		return m.getRecentTransitionsFn(ctx, endpointID, limit)
+	}
+	return nil, nil
 }
 
 // mockScheduler implements bot.Scheduler with function-field delegation and call counters.

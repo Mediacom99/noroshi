@@ -16,6 +16,8 @@ A self-contained uptime monitor in Go that uses a Telegram bot as its only inter
 - **Slow-endpoint detection** — optional 🟡 degraded state when latency exceeds a threshold
 - **Content checks** — require an exact HTTP status and/or a keyword in the response body
 - **TLS certificate expiry warnings** for HTTPS endpoints
+- **Uptime stats & incident history** — every check is recorded (30-day retention) and aggregated into `/uptime` and `/incidents`
+- **Status badges** — embeddable SVG at `http://<host>:8080/badge/<name>.svg` for READMEs and dashboards
 - **On-demand checks** — `/status` probes all endpoints immediately and reports HTTP code and latency
 - **SQLite persistence** — endpoints survive restarts; pure-Go driver, no CGO
 - **Single container** — multi-arch image (`linux/amd64`, `linux/arm64`) published to GHCR, `/healthz` endpoint for orchestrators
@@ -68,6 +70,8 @@ CGO_ENABLED=0 go build ./cmd/monitor/
 | `/resume <name or id>` | Resume a paused endpoint |
 | `/list` | Dashboard of all endpoints with inline action buttons (check now, pause, interval, delete) |
 | `/status` | Check all endpoints right now and show HTTP code + latency |
+| `/uptime <name or id>` | Uptime %, avg/p95 latency, incident count (24h / 7d / 30d) |
+| `/incidents <name or id>` | Recent outages with duration and HTTP code |
 | `/help` | Show available commands |
 
 - Names: 1–50 chars, letters/digits/`-`/`_`, not all-numeric (IDs take precedence in lookups).
@@ -90,7 +94,7 @@ CGO_ENABLED=0 go build ./cmd/monitor/
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, `error` |
 | `HEALTH_PORT` | No | `8080` | Port for the `/healthz` HTTP endpoint |
 
-The bot answers only in the configured chat — messages from any other chat are ignored.
+The bot answers only in the configured chat — messages from any other chat are ignored. The `/badge/<name>.svg` endpoint is intentionally public (read-only status), so only expose `HEALTH_PORT` if that's acceptable.
 
 ## Deploy on Coolify
 

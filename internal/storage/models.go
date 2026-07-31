@@ -38,3 +38,27 @@ type CheckOutcome struct {
 	Reason     string // human-readable failure reason, "" when ok
 	CertExpiry sql.NullTime
 }
+
+// WindowStats aggregates check results over a time window.
+type WindowStats struct {
+	Total        int
+	Up           int
+	AvgLatencyMs float64
+	P95LatencyMs int64
+	Incidents    int
+}
+
+// Uptime returns the percentage of successful checks in the window.
+func (w WindowStats) Uptime() float64 {
+	if w.Total == 0 {
+		return 100
+	}
+	return float64(w.Up) / float64(w.Total) * 100
+}
+
+// CheckTransition is a single up/down state flip in the check history.
+type CheckTransition struct {
+	CheckedAt  time.Time
+	Up         bool
+	StatusCode int
+}
