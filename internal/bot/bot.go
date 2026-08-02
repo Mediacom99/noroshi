@@ -148,6 +148,9 @@ func (b *Bot) SendSilentReply(text string, markup *tele.ReplyMarkup, replyToID i
 
 func (b *Bot) send(text string, markup *tele.ReplyMarkup, silent bool, replyToID int64) (*tele.Message, error) {
 	opts := &tele.SendOptions{
+		// A passed *SendOptions REPLACES telebot's defaults (incl. the bot's
+		// ParseMode), so HTML must be set explicitly here.
+		ParseMode:             tele.ModeHTML,
 		DisableWebPagePreview: true,
 		DisableNotification:   silent,
 		ReplyMarkup:           markup,
