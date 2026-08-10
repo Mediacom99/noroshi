@@ -245,7 +245,6 @@ A self-contained uptime monitor built in Go that uses a Telegram bot as its sole
 ## Logging
 - Use structured key-value pairs: `slog.Error("action", "key", value, "error", err)`
 - Action descriptions are short lowercase phrases: `"load config"`, `"add endpoint"`, `"scheduler: get endpoint"`
-- Prefix with component name for scheduler logs: `"scheduler: record failure"`
 - Use `slog.Info` for lifecycle events: `"telegram bot started"`, `"loaded endpoints"`
 ## Configuration
 - Required vars fail fast with descriptive error messages

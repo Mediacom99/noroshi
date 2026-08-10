@@ -51,15 +51,25 @@ type Bot struct {
 	chatID          int64
 	slowThresholdMs int64
 	rootCtx         context.Context
+	logger          *slog.Logger
 }
 
 // NewBot creates a Bot. SetScheduler must be called before Start.
 // slowThresholdMs marks healthy endpoints as "slow" above this latency (0 = disabled).
-func NewBot(token string, chatID int64, store Store, checker Checker, slowThresholdMs int64, rootCtx context.Context) (*Bot, error) {
+// logger is scoped with a "component" attribute by the caller; nil falls back
+// to slog.Default().
+func NewBot(token string, chatID int64, store Store, checker Checker, slowThresholdMs int64, rootCtx context.Context, logger *slog.Logger) (*Bot, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	pref := tele.Settings{
 		Token:     token,
 		Poller:    &tele.LongPoller{Timeout: 10 * time.Second},
 		ParseMode: tele.ModeHTML,
+		// Route handler errors through slog instead of telebot's default logger.
+		OnError: func(err error, c tele.Context) {
+			logger.Error("telegram handler error", "error", err)
+		},
 	}
 
 	tb, err := tele.NewBot(pref)
@@ -74,6 +84,7 @@ func NewBot(token string, chatID int64, store Store, checker Checker, slowThresh
 		chatID:          chatID,
 		slowThresholdMs: slowThresholdMs,
 		rootCtx:         rootCtx,
+		logger:          logger,
 	}
 
 	b.registerHandlers()
@@ -89,13 +100,13 @@ func (b *Bot) SetScheduler(s Scheduler) {
 // Start begins the bot poller in a goroutine.
 func (b *Bot) Start() {
 	go b.bot.Start()
-	slog.Info("telegram bot started")
+	b.logger.Info("telegram bot started")
 }
 
 // Stop stops the bot poller.
 func (b *Bot) Stop() {
 	b.bot.Stop()
-	slog.Info("telegram bot stopped")
+	b.logger.Info("telegram bot stopped")
 }
 
 func (b *Bot) registerCommands() {
@@ -115,7 +126,7 @@ func (b *Bot) registerCommands() {
 		{Text: "help", Description: "Show help and usage info"},
 	})
 	if err != nil {
-		slog.Error("register commands", "error", err)
+		b.logger.Error("register commands", "error", err)
 	}
 }
 

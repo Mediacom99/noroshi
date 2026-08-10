@@ -197,7 +197,7 @@ All user-provided content is HTML-escaped; messages use `ParseMode: HTML`. The `
 
 ## Logging
 
-`slog` text handler to stderr, level from `LOG_LEVEL`. Conventions: short lowercase action phrases (`"scheduler: record failure"`), entity context via `"id"`/`"name"`/`"url"`, errors under `"error"`. State transitions log at Info with `status_code`, `duration_ms`, and `downtime`.
+`slog` text handler to stderr, level from `LOG_LEVEL`. Scoped loggers are dependency-injected: `main` derives `base.With("component", ...)` (`main`, `bot`, `scheduler`) and passes them to constructors (nil falls back to `slog.Default()` for tests). Operations derive entity context once via `log.With("id"/"name"/"url")`. Conventions: short lowercase action phrases, errors under `"error"`. State transitions and operator actions (endpoint added/deleted/renamed, interval/expect/keyword changes, pause/resume) log at Info with entity context. Telebot handler errors route through `Settings.OnError` into slog. Callback message-edit failures log at Debug (benign "message not modified" cases included). Startup logs a config summary (no secrets).
 
 ## Health Endpoint
 

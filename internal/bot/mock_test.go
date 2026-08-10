@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"time"
 
 	"noroshi/internal/monitor"
@@ -20,6 +21,7 @@ func newTestBot(store Store, scheduler Scheduler) *Bot {
 		checker:   &mockChecker{},
 		chatID:    123,
 		rootCtx:   context.Background(),
+		logger:    slog.Default(),
 	}
 }
 

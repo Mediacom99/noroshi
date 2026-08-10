@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,13 +66,13 @@ func (b *Bot) handleAdd(c tele.Context) error {
 		if errors.Is(err, apperror.ErrDuplicate) {
 			return c.Send("This name or URL is already being monitored.")
 		}
-		slog.Error("add endpoint", "error", err)
+		b.logger.Error("add endpoint", "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 
 	if b.scheduler != nil {
 		if err := b.scheduler.Add(b.rootCtx, ep); err != nil {
-			slog.Error("add to scheduler", "id", ep.ID, "error", err)
+			b.logger.Error("add to scheduler", "id", ep.ID, "error", err)
 			return c.Send(fmt.Sprintf("⚠️ <b>Added endpoint #%d</b>, but scheduling failed — monitoring will start after the next restart.\n\n<b>Name:</b> %s\n<b>URL:</b> <code>%s</code>\n<b>Interval:</b> %s",
 				ep.ID, htmlEscape(ep.Name), htmlEscape(ep.URL), FormatDuration(interval)), tele.NoPreview)
 		}
@@ -91,6 +90,7 @@ func (b *Bot) handleAdd(c tele.Context) error {
 		}
 	}
 
+	b.logger.Info("endpoint added", "id", ep.ID, "name", ep.Name, "url", ep.URL, "interval", interval.String())
 	return c.Send(fmt.Sprintf("✅ <b>Added endpoint #%d</b>\n\n<b>Name:</b> %s\n<b>URL:</b> <code>%s</code>\n<b>Interval:</b> %s%s",
 		ep.ID, htmlEscape(ep.Name), htmlEscape(ep.URL), FormatDuration(interval), firstCheck), tele.NoPreview)
 }
@@ -103,11 +103,7 @@ func (b *Bot) handleDelete(c tele.Context) error {
 
 	ep, err := b.findEndpoint(arg)
 	if err != nil {
-		if errors.Is(err, apperror.ErrNotFound) {
-			return c.Send("Endpoint not found.")
-		}
-		slog.Error("find endpoint", "error", err)
-		return c.Send("Internal error. Please try again.")
+		return b.replyLookupError(c, err)
 	}
 
 	if b.scheduler != nil {
@@ -115,10 +111,11 @@ func (b *Bot) handleDelete(c tele.Context) error {
 	}
 
 	if err := b.store.DeleteEndpoint(b.rootCtx, ep.ID); err != nil {
-		slog.Error("delete endpoint", "error", err)
+		b.logger.Error("delete endpoint", "id", ep.ID, "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 
+	b.logger.Info("endpoint deleted", "id", ep.ID, "name", ep.Name)
 	return c.Send(fmt.Sprintf("🗑 <b>Deleted</b> %s (<code>%s</code>)", htmlEscape(ep.Name), htmlEscape(ep.URL)), tele.NoPreview)
 }
 
@@ -132,7 +129,7 @@ func (b *Bot) handleList(c tele.Context) error {
 func (b *Bot) handleStatus(c tele.Context) error {
 	endpoints, err := b.store.ListEndpoints(b.rootCtx)
 	if err != nil {
-		slog.Error("list endpoints", "error", err)
+		b.logger.Error("list endpoints", "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 	if len(endpoints) == 0 {
@@ -147,7 +144,7 @@ func (b *Bot) handleStatus(c tele.Context) error {
 				defer wg.Done()
 				updated, err := b.scheduler.CheckNow(b.rootCtx, ep.ID)
 				if err != nil {
-					slog.Error("status check", "id", ep.ID, "error", err)
+					b.logger.Error("status check", "id", ep.ID, "error", err)
 					return
 				}
 				endpoints[i] = updated
@@ -162,7 +159,7 @@ func (b *Bot) handleStatus(c tele.Context) error {
 func (b *Bot) sendEndpointList(c tele.Context) error {
 	endpoints, err := b.store.ListEndpoints(b.rootCtx)
 	if err != nil {
-		slog.Error("list endpoints", "error", err)
+		b.logger.Error("list endpoints", "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 
@@ -181,11 +178,7 @@ func (b *Bot) handleInterval(c tele.Context) error {
 
 	ep, err := b.findEndpoint(args[0])
 	if err != nil {
-		if errors.Is(err, apperror.ErrNotFound) {
-			return c.Send("Endpoint not found.")
-		}
-		slog.Error("find endpoint", "error", err)
-		return c.Send("Internal error. Please try again.")
+		return b.replyLookupError(c, err)
 	}
 
 	interval, err := time.ParseDuration(args[1])
@@ -197,10 +190,11 @@ func (b *Bot) handleInterval(c tele.Context) error {
 	}
 
 	if err := b.updateInterval(ep, int(interval.Seconds())); err != nil {
-		slog.Error("update interval", "id", ep.ID, "error", err)
+		b.logger.Error("update interval", "id", ep.ID, "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 
+	b.logger.Info("interval updated", "id", ep.ID, "name", ep.Name, "interval", interval.String())
 	return c.Send(fmt.Sprintf("✅ <b>Updated interval</b> for %s to %s", htmlEscape(ep.Name), FormatDuration(interval)))
 }
 
@@ -227,10 +221,10 @@ func (b *Bot) updateInterval(ep storage.Endpoint, seconds int) error {
 	if err := b.scheduler.Add(b.rootCtx, ep); err != nil {
 		ep.IntervalSeconds = oldSeconds
 		if rbErr := b.store.UpdateEndpointInterval(b.rootCtx, ep.ID, oldSeconds); rbErr != nil {
-			slog.Error("rollback interval", "id", ep.ID, "error", rbErr)
+			b.logger.Error("rollback interval", "id", ep.ID, "error", rbErr)
 		}
 		if rbErr := b.scheduler.Add(b.rootCtx, ep); rbErr != nil {
-			slog.Error("restore job", "id", ep.ID, "error", rbErr)
+			b.logger.Error("restore job", "id", ep.ID, "error", rbErr)
 		}
 		return err
 	}
@@ -277,11 +271,7 @@ func (b *Bot) handlePauseResume(c tele.Context, pause bool) error {
 
 	ep, err := b.findEndpoint(args[0])
 	if err != nil {
-		if errors.Is(err, apperror.ErrNotFound) {
-			return c.Send("Endpoint not found.")
-		}
-		slog.Error("find endpoint", "error", err)
-		return c.Send("Internal error. Please try again.")
+		return b.replyLookupError(c, err)
 	}
 
 	if ep.Paused == pause && !until.Valid {
@@ -289,16 +279,19 @@ func (b *Bot) handlePauseResume(c tele.Context, pause bool) error {
 	}
 
 	if err := b.setPaused(ep, pause, until); err != nil {
-		slog.Error("set paused", "id", ep.ID, "paused", pause, "error", err)
+		b.logger.Error("set paused", "id", ep.ID, "paused", pause, "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 
 	if pause {
 		if until.Valid {
+			b.logger.Info("endpoint paused", "id", ep.ID, "name", ep.Name, "until", until.Time.Format("2006-01-02 15:04 UTC"))
 			return c.Send(fmt.Sprintf("⏸ <b>Paused</b> %s for %s — resumes automatically.", htmlEscape(ep.Name), FormatDuration(time.Until(until.Time))))
 		}
+		b.logger.Info("endpoint paused", "id", ep.ID, "name", ep.Name, "until", "indefinite")
 		return c.Send(fmt.Sprintf("⏸ <b>Paused</b> %s — no more checks until resumed.", htmlEscape(ep.Name)))
 	}
+	b.logger.Info("endpoint resumed", "id", ep.ID, "name", ep.Name)
 	return c.Send(fmt.Sprintf("▶️ <b>Resumed</b> %s — monitoring restarted.", htmlEscape(ep.Name)))
 }
 
@@ -321,11 +314,21 @@ func (b *Bot) setPaused(ep storage.Endpoint, pause bool, until sql.NullTime) err
 
 	if err := b.scheduler.Add(b.rootCtx, ep); err != nil {
 		if rbErr := b.store.SetEndpointPaused(b.rootCtx, ep.ID, true, sql.NullTime{}); rbErr != nil {
-			slog.Error("rollback pause", "id", ep.ID, "error", rbErr)
+			b.logger.Error("rollback pause", "id", ep.ID, "error", rbErr)
 		}
 		return err
 	}
 	return nil
+}
+
+// replyLookupError replies to a failed endpoint lookup: a friendly message
+// for ErrNotFound, a generic internal error (logged) for anything else.
+func (b *Bot) replyLookupError(c tele.Context, err error) error {
+	if errors.Is(err, apperror.ErrNotFound) {
+		return c.Send("Endpoint not found.")
+	}
+	b.logger.Error("find endpoint", "error", err)
+	return c.Send("Internal error. Please try again.")
 }
 
 // findEndpoint tries to find an endpoint by ID first, then by name, then by URL.
@@ -344,7 +347,7 @@ func (b *Bot) findEndpoint(arg string) (storage.Endpoint, error) {
 func (b *Bot) pauseResumeAll(c tele.Context, pause bool, until sql.NullTime) error {
 	endpoints, err := b.store.ListEndpoints(b.rootCtx)
 	if err != nil {
-		slog.Error("list endpoints", "error", err)
+		b.logger.Error("list endpoints", "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 
@@ -360,7 +363,7 @@ func (b *Bot) pauseResumeAll(c tele.Context, pause bool, until sql.NullTime) err
 			continue
 		}
 		if err := b.setPaused(ep, pause, until); err != nil {
-			slog.Error("set paused", "id", ep.ID, "paused", pause, "error", err)
+			b.logger.Error("set paused", "id", ep.ID, "paused", pause, "error", err)
 			failed++
 			continue
 		}
@@ -377,6 +380,9 @@ func (b *Bot) pauseResumeAll(c tele.Context, pause bool, until sql.NullTime) err
 	if changed == 0 && failed == 0 {
 		msg = fmt.Sprintf("Nothing to do — all endpoints are already %s.", verb)
 	}
+	if changed > 0 {
+		b.logger.Info("endpoints "+verb, "changed", changed, "failed", failed)
+	}
 	return c.Send(msg)
 }
 
@@ -390,11 +396,7 @@ func (b *Bot) handleExpect(c tele.Context) error {
 
 	ep, err := b.findEndpoint(args[0])
 	if err != nil {
-		if errors.Is(err, apperror.ErrNotFound) {
-			return c.Send("Endpoint not found.")
-		}
-		slog.Error("find endpoint", "error", err)
-		return c.Send("Internal error. Please try again.")
+		return b.replyLookupError(c, err)
 	}
 
 	code := 0
@@ -406,10 +408,11 @@ func (b *Bot) handleExpect(c tele.Context) error {
 	}
 
 	if err := b.store.SetExpectedStatus(b.rootCtx, ep.ID, code); err != nil {
-		slog.Error("set expected status", "id", ep.ID, "error", err)
+		b.logger.Error("set expected status", "id", ep.ID, "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 
+	b.logger.Info("expected status updated", "id", ep.ID, "name", ep.Name, "status", code)
 	if code == 0 {
 		return c.Send(fmt.Sprintf("✅ %s now expects <b>any 2xx</b> status.", htmlEscape(ep.Name)))
 	}
@@ -426,11 +429,7 @@ func (b *Bot) handleKeyword(c tele.Context) error {
 
 	ep, err := b.findEndpoint(args[0])
 	if err != nil {
-		if errors.Is(err, apperror.ErrNotFound) {
-			return c.Send("Endpoint not found.")
-		}
-		slog.Error("find endpoint", "error", err)
-		return c.Send("Internal error. Please try again.")
+		return b.replyLookupError(c, err)
 	}
 
 	keyword := strings.Join(args[1:], " ")
@@ -442,10 +441,11 @@ func (b *Bot) handleKeyword(c tele.Context) error {
 	}
 
 	if err := b.store.SetExpectedKeyword(b.rootCtx, ep.ID, keyword); err != nil {
-		slog.Error("set expected keyword", "id", ep.ID, "error", err)
+		b.logger.Error("set expected keyword", "id", ep.ID, "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 
+	b.logger.Info("expected keyword updated", "id", ep.ID, "name", ep.Name, "keyword", keyword)
 	if keyword == "" {
 		return c.Send(fmt.Sprintf("✅ Keyword check <b>disabled</b> for %s.", htmlEscape(ep.Name)))
 	}
@@ -461,11 +461,7 @@ func (b *Bot) handleRename(c tele.Context) error {
 
 	ep, err := b.findEndpoint(args[0])
 	if err != nil {
-		if errors.Is(err, apperror.ErrNotFound) {
-			return c.Send("Endpoint not found.")
-		}
-		slog.Error("find endpoint", "error", err)
-		return c.Send("Internal error. Please try again.")
+		return b.replyLookupError(c, err)
 	}
 
 	newName := args[1]
@@ -480,10 +476,11 @@ func (b *Bot) handleRename(c tele.Context) error {
 		if errors.Is(err, apperror.ErrDuplicate) {
 			return c.Send("That name is already taken.")
 		}
-		slog.Error("rename endpoint", "id", ep.ID, "error", err)
+		b.logger.Error("rename endpoint", "id", ep.ID, "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 
+	b.logger.Info("endpoint renamed", "id", ep.ID, "old_name", ep.Name, "new_name", newName)
 	return c.Send(fmt.Sprintf("✅ Renamed <b>%s</b> → <b>%s</b>", htmlEscape(ep.Name), htmlEscape(newName)))
 }
 
@@ -504,7 +501,7 @@ func (b *Bot) handleUptime(c tele.Context) error {
 	}
 	stats, err := b.collectStats(ep.ID)
 	if err != nil {
-		slog.Error("collect stats", "id", ep.ID, "error", err)
+		b.logger.Error("collect stats", "id", ep.ID, "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 	labels := make([]string, len(uptimeWindows))
@@ -521,7 +518,7 @@ func (b *Bot) handleIncidents(c tele.Context) error {
 	}
 	transitions, err := b.store.GetRecentTransitions(b.rootCtx, ep.ID, 20)
 	if err != nil {
-		slog.Error("get transitions", "id", ep.ID, "error", err)
+		b.logger.Error("get transitions", "id", ep.ID, "error", err)
 		return c.Send("Internal error. Please try again.")
 	}
 	return c.Send(FormatIncidents(ep, transitions), tele.NoPreview)
@@ -550,12 +547,7 @@ func (b *Bot) findEndpointArg(c tele.Context, cmd string) (storage.Endpoint, boo
 	}
 	ep, err := b.findEndpoint(arg)
 	if err != nil {
-		if errors.Is(err, apperror.ErrNotFound) {
-			c.Send("Endpoint not found.")
-		} else {
-			slog.Error("find endpoint", "error", err)
-			c.Send("Internal error. Please try again.")
-		}
+		b.replyLookupError(c, err)
 		return storage.Endpoint{}, false
 	}
 	return ep, true

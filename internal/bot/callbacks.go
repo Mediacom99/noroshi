@@ -3,13 +3,21 @@ package bot
 import (
 	"database/sql"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
 	tele "gopkg.in/telebot.v4"
 )
+
+// editOrLog edits the callback message, logging failures at debug level.
+// Telegram edits fail benignly when the content is unchanged, so these are
+// not errors worth surfacing — but they shouldn't vanish silently either.
+func (b *Bot) editOrLog(c tele.Context, what interface{}, opts ...interface{}) {
+	if err := c.Edit(what, opts...); err != nil {
+		b.logger.Debug("callback edit", "error", err)
+	}
+}
 
 func (b *Bot) registerCallbacks() {
 	b.bot.Handle(&tele.Btn{Unique: cbDetail}, b.guarded(b.handleDetailCallback))
@@ -38,7 +46,7 @@ func (b *Bot) handleDetailCallback(c tele.Context) error {
 	}
 
 	text, markup := FormatEndpointDetail(ep, b.slowThresholdMs)
-	_ = c.Edit(text, markup, tele.NoPreview)
+	b.editOrLog(c, text, markup, tele.NoPreview)
 	return c.Respond()
 }
 
@@ -66,7 +74,7 @@ func (b *Bot) handleDeleteCallback(c tele.Context) error {
 	text := fmt.Sprintf("⚠️ <b>Delete endpoint?</b>\n\n<b>%s</b>\n<code>%s</code>",
 		htmlEscape(ep.Name), htmlEscape(ep.URL))
 
-	_ = c.Edit(text, menu, tele.NoPreview)
+	b.editOrLog(c, text, menu, tele.NoPreview)
 	return c.Respond()
 }
 
@@ -87,9 +95,11 @@ func (b *Bot) handleConfirmDeleteCallback(c tele.Context) error {
 	}
 
 	if err := b.store.DeleteEndpoint(b.rootCtx, ep.ID); err != nil {
-		slog.Error("delete endpoint", "error", err)
+		b.logger.Error("delete endpoint", "id", ep.ID, "error", err)
 		return c.Respond(&tele.CallbackResponse{Text: "Error deleting endpoint."})
 	}
+
+	b.logger.Info("endpoint deleted", "id", ep.ID, "name", ep.Name)
 
 	_ = c.Respond(&tele.CallbackResponse{Text: "Deleted!"})
 	return b.editEndpointList(c)
@@ -132,7 +142,7 @@ func (b *Bot) handleIntervalCallback(c tele.Context) error {
 	text := fmt.Sprintf("⏱ <b>Change interval for %s</b>\n\nCurrent: %s",
 		htmlEscape(ep.Name), current)
 
-	_ = c.Edit(text, menu)
+	b.editOrLog(c, text, menu)
 	return c.Respond()
 }
 
@@ -159,10 +169,11 @@ func (b *Bot) handleSetIntervalCallback(c tele.Context) error {
 	}
 
 	if err := b.updateInterval(ep, seconds); err != nil {
-		slog.Error("update interval", "id", ep.ID, "error", err)
+		b.logger.Error("update interval", "id", ep.ID, "error", err)
 		return c.Respond(&tele.CallbackResponse{Text: "Error updating interval."})
 	}
 
+	b.logger.Info("interval updated", "id", ep.ID, "name", ep.Name, "interval", FormatDuration(time.Duration(seconds)*time.Second))
 	interval := FormatDuration(time.Duration(seconds) * time.Second)
 	_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Interval updated to %s", interval)})
 	return b.editEndpointList(c)
@@ -195,12 +206,12 @@ func (b *Bot) handleCheckNowCallback(c tele.Context) error {
 
 	updated, err := b.scheduler.CheckNow(b.rootCtx, ep.ID)
 	if err != nil {
-		slog.Error("check now", "id", ep.ID, "error", err)
+		b.logger.Error("check now", "id", ep.ID, "error", err)
 		return c.Respond(&tele.CallbackResponse{Text: "Error running check."})
 	}
 
 	text, markup := FormatEndpointDetail(updated, b.slowThresholdMs)
-	_ = c.Edit(text, markup, tele.NoPreview)
+	b.editOrLog(c, text, markup, tele.NoPreview)
 	return nil
 }
 
@@ -217,7 +228,7 @@ func (b *Bot) handlePauseCallback(c tele.Context) error {
 	}
 
 	if err := b.setPaused(ep, !ep.Paused, sql.NullTime{}); err != nil {
-		slog.Error("set paused", "id", ep.ID, "paused", !ep.Paused, "error", err)
+		b.logger.Error("set paused", "id", ep.ID, "paused", !ep.Paused, "error", err)
 		return c.Respond(&tele.CallbackResponse{Text: "Error updating endpoint."})
 	}
 
@@ -225,11 +236,12 @@ func (b *Bot) handlePauseCallback(c tele.Context) error {
 	if !ep.Paused {
 		label = "Resumed"
 	}
+	b.logger.Info("endpoint "+strings.ToLower(label), "id", ep.ID, "name", ep.Name)
 	_ = c.Respond(&tele.CallbackResponse{Text: label})
 
 	ep.Paused = !ep.Paused
 	text, markup := FormatEndpointDetail(ep, b.slowThresholdMs)
-	_ = c.Edit(text, markup, tele.NoPreview)
+	b.editOrLog(c, text, markup, tele.NoPreview)
 	return nil
 }
 
@@ -237,7 +249,7 @@ func (b *Bot) handlePauseCallback(c tele.Context) error {
 func (b *Bot) editEndpointList(c tele.Context) error {
 	endpoints, err := b.store.ListEndpoints(b.rootCtx)
 	if err != nil {
-		slog.Error("list endpoints", "error", err)
+		b.logger.Error("list endpoints", "error", err)
 		return c.Edit("Internal error. Please try again.")
 	}
 
@@ -262,7 +274,7 @@ func (b *Bot) handleUptimeCallback(c tele.Context) error {
 
 	stats, err := b.collectStats(ep.ID)
 	if err != nil {
-		slog.Error("collect stats", "id", ep.ID, "error", err)
+		b.logger.Error("collect stats", "id", ep.ID, "error", err)
 		return c.Respond(&tele.CallbackResponse{Text: "Error loading stats."})
 	}
 
@@ -273,7 +285,7 @@ func (b *Bot) handleUptimeCallback(c tele.Context) error {
 
 	menu := &tele.ReplyMarkup{}
 	menu.Inline(menu.Row(menu.Data("◀ Back", cbDetail, strconv.FormatInt(ep.ID, 10))))
-	_ = c.Edit(FormatUptime(ep, labels, stats), menu, tele.NoPreview)
+	b.editOrLog(c, FormatUptime(ep, labels, stats), menu, tele.NoPreview)
 	return c.Respond()
 }
 
@@ -291,12 +303,12 @@ func (b *Bot) handleIncidentsCallback(c tele.Context) error {
 
 	transitions, err := b.store.GetRecentTransitions(b.rootCtx, ep.ID, 20)
 	if err != nil {
-		slog.Error("get transitions", "id", ep.ID, "error", err)
+		b.logger.Error("get transitions", "id", ep.ID, "error", err)
 		return c.Respond(&tele.CallbackResponse{Text: "Error loading incidents."})
 	}
 
 	menu := &tele.ReplyMarkup{}
 	menu.Inline(menu.Row(menu.Data("◀ Back", cbDetail, strconv.FormatInt(ep.ID, 10))))
-	_ = c.Edit(FormatIncidents(ep, transitions), menu, tele.NoPreview)
+	b.editOrLog(c, FormatIncidents(ep, transitions), menu, tele.NoPreview)
 	return c.Respond()
 }

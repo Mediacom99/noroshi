@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"noroshi/internal/apperror"
 	"noroshi/internal/bot"
 	"noroshi/internal/config"
 	"noroshi/internal/monitor"
@@ -29,17 +30,19 @@ func main() {
 	}
 
 	setupLogging(cfg.LogLevel)
+	base := slog.Default()
+	log := base.With("component", "main")
 
 	// Open database and run migrations
 	db, err := storage.OpenDB(cfg.DatabasePath)
 	if err != nil {
-		slog.Error("open database", "error", err)
+		log.Error("open database", "error", err)
 		os.Exit(1)
 	}
 	defer db.Close()
 
 	if err := storage.RunMigrations(db); err != nil {
-		slog.Error("run migrations", "error", err)
+		log.Error("run migrations", "error", err)
 		os.Exit(1)
 	}
 
@@ -49,9 +52,9 @@ func main() {
 	checker := monitor.NewHTTPChecker(cfg.HTTPTimeout)
 
 	// Create bot (without scheduler — circular dependency resolution)
-	teleBot, err := bot.NewBot(cfg.TelegramToken, cfg.TelegramChatID, store, checker, cfg.SlowThresholdMs, ctx)
+	teleBot, err := bot.NewBot(cfg.TelegramToken, cfg.TelegramChatID, store, checker, cfg.SlowThresholdMs, ctx, base.With("component", "bot"))
 	if err != nil {
-		slog.Error("create bot", "error", err)
+		log.Error("create bot", "error", err)
 		os.Exit(1)
 	}
 
@@ -59,9 +62,9 @@ func main() {
 	notifier := bot.NewTelegramNotifier(teleBot, cfg.MaxFailureNotifications)
 
 	// Create scheduler with notifier
-	scheduler, err := monitor.NewScheduler(ctx, store, checker, notifier, cfg.MaxFailureNotifications, cfg.FailureThreshold, cfg.ReminderInterval)
+	scheduler, err := monitor.NewScheduler(ctx, store, checker, notifier, cfg.MaxFailureNotifications, cfg.FailureThreshold, cfg.ReminderInterval, base.With("component", "scheduler"))
 	if err != nil {
-		slog.Error("create scheduler", "error", err)
+		log.Error("create scheduler", "error", err)
 		os.Exit(1)
 	}
 
@@ -71,7 +74,7 @@ func main() {
 	// Load existing endpoints and add to scheduler
 	endpoints, err := store.ListEndpoints(ctx)
 	if err != nil {
-		slog.Error("list endpoints", "error", err)
+		log.Error("list endpoints", "error", err)
 		os.Exit(1)
 	}
 	for _, ep := range endpoints {
@@ -79,39 +82,43 @@ func main() {
 			continue
 		}
 		if err := scheduler.Add(ctx, ep); err != nil {
-			slog.Error("add endpoint to scheduler", "id", ep.ID, "error", err)
+			log.Error("add endpoint to scheduler", "id", ep.ID, "error", err)
 		}
 	}
-	slog.Info("loaded endpoints", "count", len(endpoints))
+	log.Info("loaded endpoints", "count", len(endpoints))
 
 	// Start scheduler
 	scheduler.Start()
+	log.Info("noroshi started",
+		"health_port", cfg.HealthPort, "database", cfg.DatabasePath,
+		"log_level", cfg.LogLevel, "max_failure_notifications", cfg.MaxFailureNotifications,
+		"failure_threshold", cfg.FailureThreshold)
 
 	// Start bot
 	teleBot.Start()
 
 	// Start health server
-	healthSrv := startHealthServer(cfg.HealthPort, store)
+	healthSrv := startHealthServer(cfg.HealthPort, store, log)
 
 	// Wait for shutdown signal
 	<-ctx.Done()
-	slog.Info("shutting down...")
+	log.Info("shutting down...")
 
 	// Graceful shutdown
 	teleBot.Stop()
 
 	if err := scheduler.Shutdown(); err != nil {
-		slog.Error("shutdown scheduler", "error", err)
+		log.Error("shutdown scheduler", "error", err)
 	}
 
 	if err := healthSrv.Shutdown(context.Background()); err != nil {
-		slog.Error("shutdown health server", "error", err)
+		log.Error("shutdown health server", "error", err)
 	}
 
-	slog.Info("shutdown complete")
+	log.Info("shutdown complete")
 }
 
-func startHealthServer(port int, store *storage.SQLiteStore) *http.Server {
+func startHealthServer(port int, store *storage.SQLiteStore, log *slog.Logger) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -124,6 +131,9 @@ func startHealthServer(port int, store *storage.SQLiteStore) *http.Server {
 		name := strings.TrimSuffix(r.PathValue("name"), ".svg")
 		ep, err := store.GetEndpointByName(r.Context(), name)
 		if err != nil {
+			if !errors.Is(err, apperror.ErrNotFound) {
+				log.Error("badge lookup", "name", name, "error", err)
+			}
 			w.Header().Set("Content-Type", "image/svg+xml")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(badgeSVG(name, "not found", "#9f9f9f")))
@@ -150,9 +160,9 @@ func startHealthServer(port int, store *storage.SQLiteStore) *http.Server {
 	}
 
 	go func() {
-		slog.Info("health server started", "port", port)
+		log.Info("health server started", "port", port)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("health server", "error", err)
+			log.Error("health server", "error", err)
 		}
 	}()
 

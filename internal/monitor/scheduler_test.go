@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -228,7 +229,7 @@ func (m *mockChecker) Check(ctx context.Context, url string, opts CheckOptions) 
 
 func newMockScheduler(t *testing.T, store *mockStore, checker *mockChecker, notifier *mockNotifier, maxFail int) *Scheduler {
 	t.Helper()
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxFail, 1, 0)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxFail, 1, 0, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +360,7 @@ func TestCheckAndNotifyOK(t *testing.T) {
 	notifier := &mockNotifier{}
 	checker := NewHTTPChecker(5 * time.Second)
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +391,7 @@ func TestCheckAndNotifyFailure(t *testing.T) {
 	notifier := &mockNotifier{}
 	checker := NewHTTPChecker(5 * time.Second)
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +415,7 @@ func TestCheckAndNotifyFailureCap(t *testing.T) {
 	checker := NewHTTPChecker(5 * time.Second)
 
 	maxNotifications := 3
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxNotifications, 1, 0)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxNotifications, 1, 0, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +445,7 @@ func TestCheckAndNotifyRecovery(t *testing.T) {
 	notifier := &mockNotifier{}
 	checker := NewHTTPChecker(5 * time.Second)
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +471,7 @@ func TestCheckAndNotifyNoRecoveryWhenAlreadyOK(t *testing.T) {
 	notifier := &mockNotifier{}
 	checker := NewHTTPChecker(5 * time.Second)
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +642,7 @@ func TestCheckAndNotifyFailureThreshold(t *testing.T) {
 		},
 	}
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 3, 0)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 3, 0, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -709,7 +710,7 @@ func TestCheckAndNotifyReminder(t *testing.T) {
 	}
 
 	// max 1 notification, reminder every nanosecond (fires on next check).
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 1, 1, time.Nanosecond)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 1, 1, time.Nanosecond, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -735,7 +736,7 @@ func TestCheckAndNotifyNoReminderWhenDisabled(t *testing.T) {
 		},
 	}
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 1, 1, 0)
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 1, 1, 0, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -60,16 +60,21 @@ type Scheduler struct {
 	failureThreshold        int
 	reminderInterval        time.Duration
 	ctx                     context.Context
+	logger                  *slog.Logger
 }
 
 // NewScheduler creates a Scheduler. Call Start() to begin running jobs.
 // failureThreshold is how many consecutive failures must occur before the
 // first alert is sent (1 = alert on the first failure). reminderInterval
-// controls "still down" re-alerts (0 = disabled).
-func NewScheduler(ctx context.Context, store Store, checker Checker, notifier Notifier, maxFailureNotifications int, failureThreshold int, reminderInterval time.Duration) (*Scheduler, error) {
+// controls "still down" re-alerts (0 = disabled). logger is scoped with a
+// "component" attribute by the caller; nil falls back to slog.Default().
+func NewScheduler(ctx context.Context, store Store, checker Checker, notifier Notifier, maxFailureNotifications int, failureThreshold int, reminderInterval time.Duration, logger *slog.Logger) (*Scheduler, error) {
 	cron, err := gocron.NewScheduler()
 	if err != nil {
 		return nil, fmt.Errorf("create gocron scheduler: %w", err)
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 	s := &Scheduler{
 		cron:                    cron,
@@ -80,6 +85,7 @@ func NewScheduler(ctx context.Context, store Store, checker Checker, notifier No
 		failureThreshold:        failureThreshold,
 		reminderInterval:        reminderInterval,
 		ctx:                     ctx,
+		logger:                  logger,
 	}
 
 	// Periodic housekeeping: resume endpoints whose timed pause has expired.
@@ -110,6 +116,7 @@ func NewScheduler(ctx context.Context, store Store, checker Checker, notifier No
 // Start begins running scheduled jobs.
 func (s *Scheduler) Start() {
 	s.cron.Start()
+	s.logger.Info("scheduler started")
 }
 
 // Add creates a gocron job for the given endpoint.
@@ -147,7 +154,7 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 
 	ep, err := s.store.GetEndpoint(ctx, endpointID)
 	if err != nil {
-		slog.Error("scheduler: get endpoint", "id", endpointID, "error", err)
+		s.logger.Error("get endpoint", "id", endpointID, "error", err)
 		return
 	}
 
@@ -156,6 +163,8 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 	if ep.Paused {
 		return
 	}
+
+	log := s.logger.With("id", ep.ID, "name", ep.Name, "url", ep.URL)
 
 	res := s.checker.Check(ctx, ep.URL, CheckOptions{
 		ExpectedStatus: ep.ExpectedStatus,
@@ -170,41 +179,38 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 		// NOT_OK
 		updated, err := s.store.RecordFailure(ctx, endpointID, outcome, s.maxFailureNotifications, s.failureThreshold)
 		if err != nil {
-			slog.Error("scheduler: record failure", "id", endpointID, "error", err)
+			log.Error("record failure", "error", err)
 			return
 		}
 
 		// The store caps failure_notifications_sent at maxFailureNotifications,
 		// so notify only when this failure actually incremented the counter.
 		if updated.FailureNotificationsSent > ep.FailureNotificationsSent {
-			slog.Info("scheduler: endpoint down",
-				"id", endpointID, "name", ep.Name, "url", ep.URL,
+			log.Info("endpoint down",
 				"status_code", statusCode, "duration_ms", latencyMs,
 				"consecutive_failures", updated.ConsecutiveFailures)
 			msgID, err := s.notifier.NotifyFailure(ctx, updated)
 			if err != nil {
-				slog.Error("scheduler: notify failure", "id", endpointID, "error", err)
+				log.Error("notify failure", "error", err)
 			} else if msgID > 0 {
 				if err := s.store.SetAlertMessageID(ctx, endpointID, msgID); err != nil {
-					slog.Error("scheduler: set alert message id", "id", endpointID, "error", err)
+					log.Error("set alert message id", "error", err)
 				}
 			}
 		} else if s.reminderInterval > 0 && updated.LastNotifiedAt.Valid &&
 			time.Since(updated.LastNotifiedAt.Time) >= s.reminderInterval {
 			// Cap reached but the outage continues — send a reminder.
-			slog.Info("scheduler: endpoint still down",
-				"id", endpointID, "name", ep.Name, "url", ep.URL,
+			log.Info("endpoint still down",
 				"status_code", statusCode, "consecutive_failures", updated.ConsecutiveFailures)
 			if _, err := s.notifier.NotifyFailure(ctx, updated); err != nil {
-				slog.Error("scheduler: notify reminder", "id", endpointID, "error", err)
+				log.Error("notify reminder", "error", err)
 			} else if err := s.store.TouchLastNotified(ctx, endpointID); err != nil {
-				slog.Error("scheduler: touch last notified", "id", endpointID, "error", err)
+				log.Error("touch last notified", "error", err)
 			}
 		} else {
 			// Below the alert threshold or past the notification cap — log at
 			// debug to avoid spamming on every interval during a long outage.
-			slog.Debug("scheduler: check failed",
-				"id", endpointID, "name", ep.Name, "url", ep.URL,
+			log.Debug("check failed",
 				"status_code", statusCode, "duration_ms", latencyMs,
 				"consecutive_failures", updated.ConsecutiveFailures)
 		}
@@ -216,7 +222,7 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 			// Recovery
 			recovered, err := s.store.RecordRecovery(ctx, endpointID, outcome)
 			if err != nil {
-				slog.Error("scheduler: record recovery", "id", endpointID, "error", err)
+				log.Error("record recovery", "error", err)
 				return
 			}
 
@@ -224,18 +230,17 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 			// last_failure_at comes from an ad-hoc /status probe, not an outage.
 			if recovered.LastFailureAt.Valid {
 				downtime := time.Since(recovered.LastFailureAt.Time)
-				slog.Info("scheduler: endpoint recovered",
-					"id", endpointID, "name", ep.Name, "url", ep.URL,
+				log.Info("endpoint recovered",
 					"status_code", statusCode, "duration_ms", latencyMs,
 					"downtime", downtime.String())
 				if err := s.notifier.NotifyRecovery(ctx, recovered, downtime); err != nil {
-					slog.Error("scheduler: notify recovery", "id", endpointID, "error", err)
+					log.Error("notify recovery", "error", err)
 				}
 			}
 		} else {
 			// Already OK, just update status
 			if err := s.store.UpdateEndpointStatus(ctx, endpointID, outcome); err != nil {
-				slog.Error("scheduler: update status", "id", endpointID, "error", err)
+				log.Error("update status", "error", err)
 			}
 		}
 	}
@@ -273,15 +278,15 @@ func (s *Scheduler) maybeWarnCertExpiry(ctx context.Context, ep storage.Endpoint
 		return
 	}
 
-	slog.Info("scheduler: certificate expiring",
-		"id", ep.ID, "name", ep.Name, "url", ep.URL,
+	log := s.logger.With("id", ep.ID, "name", ep.Name, "url", ep.URL)
+	log.Info("certificate expiring",
 		"days_left", daysLeft, "expires_at", certExpiry.Format("2006-01-02"))
 	if err := s.notifier.NotifyCertExpiry(ctx, ep, daysLeft); err != nil {
-		slog.Error("scheduler: notify cert expiry", "id", ep.ID, "error", err)
+		log.Error("notify cert expiry", "error", err)
 		return
 	}
 	if err := s.store.TouchCertWarning(ctx, ep.ID); err != nil {
-		slog.Error("scheduler: touch cert warning", "id", ep.ID, "error", err)
+		log.Error("touch cert warning", "error", err)
 	}
 }
 
@@ -332,22 +337,23 @@ func (s *Scheduler) resumeExpiredPauses() {
 
 	expired, err := s.store.ListExpiredPauses(ctx, time.Now().UTC())
 	if err != nil {
-		slog.Error("scheduler: list expired pauses", "error", err)
+		s.logger.Error("list expired pauses", "error", err)
 		return
 	}
 
 	for _, ep := range expired {
+		log := s.logger.With("id", ep.ID, "name", ep.Name)
 		if err := s.store.SetEndpointPaused(ctx, ep.ID, false, sql.NullTime{}); err != nil {
-			slog.Error("scheduler: resume endpoint", "id", ep.ID, "error", err)
+			log.Error("resume endpoint", "error", err)
 			continue
 		}
 		ep.Paused = false
 		ep.PausedUntil = sql.NullTime{}
 		if err := s.Add(ctx, ep); err != nil {
-			slog.Error("scheduler: restart job after pause", "id", ep.ID, "error", err)
+			log.Error("restart job after pause", "error", err)
 			continue
 		}
-		slog.Info("scheduler: timed pause ended", "id", ep.ID, "name", ep.Name)
+		log.Info("timed pause ended")
 	}
 }
 
@@ -355,7 +361,7 @@ func (s *Scheduler) resumeExpiredPauses() {
 // logged but never block the monitoring flow.
 func (s *Scheduler) recordCheck(ctx context.Context, endpointID int64, res CheckResult) {
 	if err := s.store.RecordCheck(ctx, endpointID, res.Up, res.StatusCode, res.Latency.Milliseconds()); err != nil {
-		slog.Error("scheduler: record check", "id", endpointID, "error", err)
+		s.logger.Error("record check", "id", endpointID, "error", err)
 	}
 }
 
@@ -363,10 +369,10 @@ func (s *Scheduler) recordCheck(ctx context.Context, endpointID int64, res Check
 func (s *Scheduler) pruneOldChecks() {
 	deleted, err := s.store.PruneChecks(s.ctx, time.Now().UTC().AddDate(0, 0, -checkRetentionDays))
 	if err != nil {
-		slog.Error("scheduler: prune checks", "error", err)
+		s.logger.Error("prune checks", "error", err)
 		return
 	}
 	if deleted > 0 {
-		slog.Info("scheduler: pruned check history", "deleted", deleted)
+		s.logger.Info("pruned check history", "deleted", deleted)
 	}
 }
