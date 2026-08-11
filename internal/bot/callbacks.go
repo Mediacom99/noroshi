@@ -250,14 +250,17 @@ func (b *Bot) editEndpointList(c tele.Context) error {
 	endpoints, err := b.store.ListEndpoints(b.rootCtx)
 	if err != nil {
 		b.logger.Error("list endpoints", "error", err)
-		return c.Edit("Internal error. Please try again.")
+		b.editOrLog(c, "Internal error. Please try again.")
+		return nil
 	}
 
 	text, markup := FormatEndpointList(endpoints, b.slowThresholdMs)
 	if markup == nil {
-		return c.Edit(text)
+		b.editOrLog(c, text)
+		return nil
 	}
-	return c.Edit(text, markup, tele.NoPreview)
+	b.editOrLog(c, text, markup, tele.NoPreview)
+	return nil
 }
 
 // handleUptimeCallback shows the uptime stats view for one endpoint.

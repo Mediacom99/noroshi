@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"noroshi/internal/monitor"
@@ -67,7 +68,13 @@ func NewBot(token string, chatID int64, store Store, checker Checker, slowThresh
 		Poller:    &tele.LongPoller{Timeout: 10 * time.Second},
 		ParseMode: tele.ModeHTML,
 		// Route handler errors through slog instead of telebot's default logger.
+		// "message is not modified" is benign (user tapped refresh with no
+		// changes) — keep it out of the error logs.
 		OnError: func(err error, c tele.Context) {
+			if err != nil && strings.Contains(err.Error(), "message is not modified") {
+				logger.Debug("telegram handler: message not modified")
+				return
+			}
 			logger.Error("telegram handler error", "error", err)
 		},
 	}
