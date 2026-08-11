@@ -18,13 +18,22 @@ import (
 //go:embed migrations/*.sql
 var embedMigrations embed.FS
 
-// OpenDB opens a SQLite database with WAL mode and busy timeout.
+// OpenDB opens a SQLite database with WAL mode and a busy timeout.
+//
+// modernc.org/sqlite only honors _pragma DSN parameters — the mattn-style
+// "_journal_mode=WAL&_busy_timeout=5000" form is silently ignored, which
+// causes SQLITE_BUSY under concurrent writers.
+//
+// MaxOpenConns(1) serializes all in-process access through one connection.
+// SQLite allows only a single writer anyway, and this database is written by
+// many concurrent gocron jobs, so one connection is both safe and fast enough.
 func OpenDB(path string) (*sql.DB, error) {
-	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=5000", path)
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping database: %w", err)

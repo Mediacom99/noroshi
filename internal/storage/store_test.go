@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -688,5 +690,58 @@ func TestCheckStatsAndPrune(t *testing.T) {
 	}
 	if deleted != 10 {
 		t.Errorf("deleted = %d, want 10", deleted)
+	}
+}
+
+func TestOpenDBConcurrentWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "concurrent.db")
+	db, err := OpenDB(path)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer db.Close()
+	if err := RunMigrations(db); err != nil {
+		t.Fatalf("RunMigrations: %v", err)
+	}
+
+	// WAL mode must actually be active (the DSN pragma must not be ignored).
+	var mode string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatalf("query journal_mode: %v", err)
+	}
+	if mode != "wal" {
+		t.Errorf("journal_mode = %q, want %q", mode, "wal")
+	}
+
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+	ep, err := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+	if err != nil {
+		t.Fatalf("AddEndpoint: %v", err)
+	}
+
+	// Simulate many concurrent gocron jobs writing at once — this is what
+	// produced SQLITE_BUSY in production.
+	var wg sync.WaitGroup
+	errs := make(chan error, 400)
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 10 {
+				if err := store.RecordCheck(ctx, ep.ID, true, 200, 10); err != nil {
+					errs <- err
+				}
+				if err := store.UpdateEndpointStatus(ctx, ep.ID,
+					CheckOutcome{Status: "ok", StatusCode: 200, LatencyMs: 10}); err != nil {
+					errs <- err
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent write failed: %v", err)
 	}
 }

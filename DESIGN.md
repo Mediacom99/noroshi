@@ -136,7 +136,7 @@ CREATE INDEX idx_checks_endpoint_time ON checks (endpoint_id, checked_at);
 - `paused` endpoints keep their row and config but have no gocron job; they are skipped at startup, in `checkAndNotify`, and in `CheckNow`. A timed pause sets `paused_until`; a per-minute gocron housekeeping job (`resumeExpiredPauses`) resumes expired pauses.
 - `failure_notifications_sent` only counts failures at or beyond `FAILURE_THRESHOLD` and is capped at `MAX_FAILURE_NOTIFICATIONS` by `RecordFailure` — it always reflects notifications actually sent.
 - `last_failure_at` is set on the first failure of an outage and cleared on recovery; `RecordRecovery` returns the endpoint with the pre-reset value so downtime can be computed.
-- Connection string: `file:<path>?_journal_mode=WAL&_busy_timeout=5000`. Migrations embedded via `//go:embed migrations/*.sql` — never inline `CREATE TABLE` in Go.
+- Connection string: `file:<path>?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)` — modernc.org/sqlite only honors `_pragma` params (the mattn-style `_journal_mode`/`_busy_timeout` are silently ignored). `OpenDB` sets `SetMaxOpenConns(1)` to serialize in-process writers. Migrations embedded via `//go:embed migrations/*.sql` — never inline `CREATE TABLE` in Go.
 
 ## Store Interface
 
