@@ -49,6 +49,7 @@ type mockContext struct {
 
 	// Output capture fields.
 	sentMessages   []string
+	sentDocuments  []*tele.Document
 	editedMessages []string
 	respondCalls   []tele.CallbackResponse
 	sendOpts       [][]interface{}
@@ -78,6 +79,9 @@ func (m *mockContext) Callback() *tele.Callback {
 func (m *mockContext) Send(what interface{}, opts ...interface{}) error {
 	if s, ok := what.(string); ok {
 		m.sentMessages = append(m.sentMessages, s)
+	}
+	if d, ok := what.(*tele.Document); ok {
+		m.sentDocuments = append(m.sentDocuments, d)
 	}
 	m.sendOpts = append(m.sendOpts, opts)
 	return nil
@@ -113,6 +117,9 @@ type mockStore struct {
 	renameEndpointFn         func(ctx context.Context, id int64, newName string) error
 	getCheckStatsFn          func(ctx context.Context, endpointID int64, since time.Time) (storage.WindowStats, error)
 	getRecentTransitionsFn   func(ctx context.Context, endpointID int64, limit int) ([]storage.CheckTransition, error)
+	addMaintenanceWindowFn   func(ctx context.Context, endpointID sql.NullInt64, days string, startMinutes, endMinutes int) (storage.MaintenanceWindow, error)
+	listMaintenanceWindowsFn func(ctx context.Context) ([]storage.MaintenanceWindow, error)
+	deleteMaintenanceWindowFn func(ctx context.Context, id int64) error
 }
 
 func (m *mockStore) AddEndpoint(ctx context.Context, name, url string, interval int) (storage.Endpoint, error) {
@@ -204,6 +211,27 @@ func (m *mockStore) GetRecentTransitions(ctx context.Context, endpointID int64, 
 		return m.getRecentTransitionsFn(ctx, endpointID, limit)
 	}
 	return nil, nil
+}
+
+func (m *mockStore) AddMaintenanceWindow(ctx context.Context, endpointID sql.NullInt64, days string, startMinutes, endMinutes int) (storage.MaintenanceWindow, error) {
+	if m.addMaintenanceWindowFn != nil {
+		return m.addMaintenanceWindowFn(ctx, endpointID, days, startMinutes, endMinutes)
+	}
+	return storage.MaintenanceWindow{ID: 1, EndpointID: endpointID, Days: days, StartMinutes: startMinutes, EndMinutes: endMinutes}, nil
+}
+
+func (m *mockStore) ListMaintenanceWindows(ctx context.Context) ([]storage.MaintenanceWindow, error) {
+	if m.listMaintenanceWindowsFn != nil {
+		return m.listMaintenanceWindowsFn(ctx)
+	}
+	return nil, nil
+}
+
+func (m *mockStore) DeleteMaintenanceWindow(ctx context.Context, id int64) error {
+	if m.deleteMaintenanceWindowFn != nil {
+		return m.deleteMaintenanceWindowFn(ctx, id)
+	}
+	return nil
 }
 
 // mockScheduler implements bot.Scheduler with function-field delegation and call counters.

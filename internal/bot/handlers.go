@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -29,6 +30,9 @@ func (b *Bot) registerHandlers() {
 	b.bot.Handle("/expect", b.guarded(b.handleExpect))
 	b.bot.Handle("/keyword", b.guarded(b.handleKeyword))
 	b.bot.Handle("/rename", b.guarded(b.handleRename))
+	b.bot.Handle("/maint", b.guarded(b.handleMaint))
+	b.bot.Handle("/digest", b.guarded(b.handleDigest))
+	b.bot.Handle("/export", b.guarded(b.handleExport))
 	b.bot.Handle("/help", b.guarded(b.handleHelp))
 
 	b.registerCallbacks()
@@ -46,7 +50,7 @@ func (b *Bot) handleAdd(c tele.Context) error {
 	}
 	rawURL := args[1]
 	if err := ValidateURL(rawURL); err != nil {
-		return c.Send("Invalid URL. Must be a valid http:// or https:// address.")
+		return c.Send(fmt.Sprintf("Invalid URL: %s\nSupported schemes: http(s)://, tcp://host:port, dns://host, ping://host", htmlEscape(err.Error())))
 	}
 
 	intervalStr := "1m"
@@ -419,12 +423,18 @@ func (b *Bot) handleExpect(c tele.Context) error {
 	return c.Send(fmt.Sprintf("✅ %s now expects exactly <b>HTTP %d</b>.", htmlEscape(ep.Name), code))
 }
 
-// handleKeyword sets a required response-body substring for an endpoint.
+// handleKeyword sets a required response-body keyword spec for an endpoint.
+// Specs: plain text (must contain), "!text" (must not contain),
+// "re:pattern" (must match), "!re:pattern" (must not match).
 // "/keyword <name> off" clears it.
 func (b *Bot) handleKeyword(c tele.Context) error {
 	args := strings.Fields(c.Message().Payload)
 	if len(args) < 2 {
-		return c.Send("Usage: /keyword <code>&lt;name or id&gt; &lt;text|off&gt;</code>\nExample: /keyword prod-api \"status\":\"ok\"")
+		return c.Send("Usage: /keyword <code>&lt;name or id&gt; &lt;text|!text|re:pattern|!re:pattern|off&gt;</code>\n" +
+			"Examples:\n" +
+			"/keyword prod-api \"status\":\"ok\" — body must contain text\n" +
+			"/keyword prod-api !fatal error — body must NOT contain text\n" +
+			"/keyword prod-api re:version-[0-9]+ — body must match regex")
 	}
 
 	ep, err := b.findEndpoint(args[0])
@@ -439,6 +449,11 @@ func (b *Bot) handleKeyword(c tele.Context) error {
 	if len(keyword) > 200 {
 		return c.Send("Keyword too long (max 200 characters).")
 	}
+	if keyword != "" {
+		if err := ValidateKeywordSpec(keyword); err != nil {
+			return c.Send(err.Error())
+		}
+	}
 
 	if err := b.store.SetExpectedKeyword(b.rootCtx, ep.ID, keyword); err != nil {
 		b.logger.Error("set expected keyword", "id", ep.ID, "error", err)
@@ -449,7 +464,7 @@ func (b *Bot) handleKeyword(c tele.Context) error {
 	if keyword == "" {
 		return c.Send(fmt.Sprintf("✅ Keyword check <b>disabled</b> for %s.", htmlEscape(ep.Name)))
 	}
-	return c.Send(fmt.Sprintf("✅ %s must now contain <code>%s</code> in its response.", htmlEscape(ep.Name), htmlEscape(keyword)), tele.NoPreview)
+	return c.Send(fmt.Sprintf("✅ Keyword check for %s: <code>%s</code>", htmlEscape(ep.Name), htmlEscape(keyword)), tele.NoPreview)
 }
 
 // handleRename renames an endpoint.
@@ -551,4 +566,151 @@ func (b *Bot) findEndpointArg(c tele.Context, cmd string) (storage.Endpoint, boo
 		return storage.Endpoint{}, false
 	}
 	return ep, true
+}
+
+// handleMaint manages recurring maintenance windows: /maint add|list|del.
+// During a window, scheduled checks are skipped entirely (times are UTC).
+func (b *Bot) handleMaint(c tele.Context) error {
+	args := strings.Fields(c.Message().Payload)
+	if len(args) == 0 {
+		return c.Send(maintUsage())
+	}
+	switch args[0] {
+	case "add":
+		return b.maintAdd(c, args[1:])
+	case "list":
+		return b.maintList(c)
+	case "del", "delete", "remove", "rm":
+		return b.maintDel(c, args[1:])
+	default:
+		return c.Send(maintUsage())
+	}
+}
+
+func maintUsage() string {
+	return "Usage:\n" +
+		"/maint add <code>&lt;name|all&gt; &lt;days&gt; &lt;HH:MM-HH:MM&gt;</code>\n" +
+		"/maint list\n" +
+		"/maint del <code>&lt;window id&gt;</code>\n\n" +
+		"Days: <code>all</code> or <code>mon,tue,wed,thu,fri,sat,sun</code>\n" +
+		"Times are UTC. Checks are skipped while a window is active.\n" +
+		"Example: /maint add prod-api sat,sun 02:00-04:00"
+}
+
+func (b *Bot) maintAdd(c tele.Context, args []string) error {
+	if len(args) != 3 {
+		return c.Send(maintUsage())
+	}
+
+	days, err := ParseMaintDays(args[1])
+	if err != nil {
+		return c.Send(err.Error())
+	}
+	start, end, err := ParseMaintTimeRange(args[2])
+	if err != nil {
+		return c.Send(err.Error())
+	}
+
+	var endpointID sql.NullInt64
+	target := "all endpoints"
+	if args[0] != "all" {
+		ep, err := b.findEndpoint(args[0])
+		if err != nil {
+			return b.replyLookupError(c, err)
+		}
+		endpointID = sql.NullInt64{Int64: ep.ID, Valid: true}
+		target = ep.Name
+	}
+
+	w, err := b.store.AddMaintenanceWindow(b.rootCtx, endpointID, days, start, end)
+	if err != nil {
+		b.logger.Error("add maintenance window", "target", target, "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+
+	b.logger.Info("maintenance window added", "id", w.ID, "target", target, "days", days, "start", start, "end", end)
+	return c.Send(fmt.Sprintf("✅ <b>Maintenance window #%d</b> for <b>%s</b>\n%s · %s–%s UTC\nScheduled checks are skipped while active.",
+		w.ID, htmlEscape(target), days, formatMaintTime(start), formatMaintTime(end)), tele.NoPreview)
+}
+
+func (b *Bot) maintList(c tele.Context) error {
+	windows, err := b.store.ListMaintenanceWindows(b.rootCtx)
+	if err != nil {
+		b.logger.Error("list maintenance windows", "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+
+	// Resolve endpoint names for per-endpoint windows.
+	names := map[int64]string{}
+	if endpoints, err := b.store.ListEndpoints(b.rootCtx); err == nil {
+		for _, ep := range endpoints {
+			names[ep.ID] = ep.Name
+		}
+	}
+	return c.Send(FormatMaintList(windows, names), tele.NoPreview)
+}
+
+func (b *Bot) maintDel(c tele.Context, args []string) error {
+	if len(args) != 1 {
+		return c.Send("Usage: /maint del <code>&lt;window id&gt;</code> — see /maint list")
+	}
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return c.Send("Window ID must be a number — see /maint list")
+	}
+	if err := b.store.DeleteMaintenanceWindow(b.rootCtx, id); err != nil {
+		if errors.Is(err, apperror.ErrNotFound) {
+			return c.Send(fmt.Sprintf("Maintenance window #%d not found.", id))
+		}
+		b.logger.Error("delete maintenance window", "id", id, "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+	b.logger.Info("maintenance window deleted", "id", id)
+	return c.Send(fmt.Sprintf("✅ Maintenance window #%d deleted.", id))
+}
+
+// formatMaintTime renders minutes since midnight as HH:MM.
+func formatMaintTime(minutes int) string {
+	return fmt.Sprintf("%02d:%02d", minutes/60, minutes%60)
+}
+
+// handleDigest sends the 24h uptime digest on demand.
+func (b *Bot) handleDigest(c tele.Context) error {
+	text, err := monitor.BuildDigest(b.rootCtx, b.store, 24*time.Hour)
+	if err != nil {
+		b.logger.Error("build digest", "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+	if text == "" {
+		return c.Send("No active endpoints to report on.")
+	}
+	return c.Send(text, tele.NoPreview)
+}
+
+// handleExport sends the full monitor configuration as a JSON document.
+func (b *Bot) handleExport(c tele.Context) error {
+	endpoints, err := b.store.ListEndpoints(b.rootCtx)
+	if err != nil {
+		b.logger.Error("export: list endpoints", "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+	windows, err := b.store.ListMaintenanceWindows(b.rootCtx)
+	if err != nil {
+		b.logger.Error("export: list maintenance windows", "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+	data, err := buildExport(endpoints, windows, time.Now())
+	if err != nil {
+		b.logger.Error("export: build", "error", err)
+		return c.Send("Internal error. Please try again.")
+	}
+
+	doc := &tele.Document{
+		File:     tele.FromReader(bytes.NewReader(data)),
+		FileName: fmt.Sprintf("noroshi-export-%s.json", time.Now().UTC().Format("2006-01-02")),
+		MIME:     "application/json",
+		Caption:  fmt.Sprintf("📦 Noroshi export — %d endpoints, %d maintenance windows", len(endpoints), len(windows)),
+	}
+	b.logger.Info("config exported", "endpoints", len(endpoints), "maintenance_windows", len(windows))
+	return c.Send(doc)
 }

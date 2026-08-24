@@ -24,6 +24,13 @@ func TestValidateURL(t *testing.T) {
 		{"no dot in host", "http://localhost", true},
 		{"no dot bare word", "http://foo", true},
 		{"scheme only", "https", true},
+		{"valid tcp", "tcp://db.internal:5432", false},
+		{"valid tcp IP", "tcp://192.168.1.10:5432", false},
+		{"tcp missing port", "tcp://db.internal", true},
+		{"valid dns", "dns://example.com", false},
+		{"valid dns single label", "dns://nas", false},
+		{"valid ping", "ping://192.168.1.1", false},
+		{"dns no host", "dns://", true},
 	}
 
 	for _, tt := range tests {
@@ -68,6 +75,33 @@ func TestValidateName(t *testing.T) {
 			err := ValidateName(tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateName(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateKeywordSpec(t *testing.T) {
+	tests := []struct {
+		name    string
+		keyword string
+		wantErr bool
+	}{
+		{"plain substring", `"status":"ok"`, false},
+		{"negated substring", "!fatal error", false},
+		{"regex", `re:version-[0-9]+`, false},
+		{"negated regex", `!re:error|exception`, false},
+		{"invalid regex", "re:[unclosed", true},
+		{"invalid negated regex", "!re:(", true},
+		{"empty regex", "re:", true},
+		{"empty negated regex", "!re:", true},
+		{"bare negation", "!", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateKeywordSpec(tt.keyword)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateKeywordSpec(%q) error = %v, wantErr %v", tt.keyword, err, tt.wantErr)
 			}
 		})
 	}

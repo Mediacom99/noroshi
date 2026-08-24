@@ -19,6 +19,7 @@ type mockStore struct {
 	mu             sync.Mutex
 	endpoints      map[int64]storage.Endpoint
 	recordedChecks int
+	inMaintenance  bool
 }
 
 func newMockStore() *mockStore {
@@ -144,6 +145,26 @@ func (m *mockStore) PruneChecks(_ context.Context, olderThan time.Time) (int64, 
 	return 0, nil
 }
 
+func (m *mockStore) IsInMaintenance(_ context.Context, _ int64, _ time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.inMaintenance, nil
+}
+
+func (m *mockStore) ListEndpoints(_ context.Context) ([]storage.Endpoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	endpoints := make([]storage.Endpoint, 0, len(m.endpoints))
+	for _, ep := range m.endpoints {
+		endpoints = append(endpoints, ep)
+	}
+	return endpoints, nil
+}
+
+func (m *mockStore) GetCheckStats(_ context.Context, endpointID int64, since time.Time) (storage.WindowStats, error) {
+	return storage.WindowStats{Total: 10, Up: 9, AvgLatencyMs: 120, Incidents: 1}, nil
+}
+
 func (m *mockStore) TouchCertWarning(_ context.Context, id int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -178,6 +199,7 @@ type mockNotifier struct {
 	failures     []storage.Endpoint
 	recoveries   []recoveryCall
 	certWarnings int
+	digests      []string
 }
 
 type recoveryCall struct {
@@ -206,6 +228,19 @@ func (n *mockNotifier) NotifyRecovery(_ context.Context, ep storage.Endpoint, do
 	return nil
 }
 
+func (n *mockNotifier) NotifyDigest(_ context.Context, text string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.digests = append(n.digests, text)
+	return nil
+}
+
+func (n *mockNotifier) digestCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.digests)
+}
+
 func (n *mockNotifier) failureCount() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -229,7 +264,7 @@ func (m *mockChecker) Check(ctx context.Context, url string, opts CheckOptions) 
 
 func newMockScheduler(t *testing.T, store *mockStore, checker *mockChecker, notifier *mockNotifier, maxFail int) *Scheduler {
 	t.Helper()
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxFail, 1, 0, slog.Default())
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxFail, 1, 0, DigestConfig{}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,9 +393,9 @@ func TestCheckAndNotifyOK(t *testing.T) {
 	store := newMockStore()
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
-	checker := NewHTTPChecker(5 * time.Second)
+	checker := NewChecker(5 * time.Second)
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0, slog.Default())
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0, DigestConfig{}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,9 +424,9 @@ func TestCheckAndNotifyFailure(t *testing.T) {
 	store := newMockStore()
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
-	checker := NewHTTPChecker(5 * time.Second)
+	checker := NewChecker(5 * time.Second)
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0, slog.Default())
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0, DigestConfig{}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,10 +447,10 @@ func TestCheckAndNotifyFailureCap(t *testing.T) {
 	store := newMockStore()
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
-	checker := NewHTTPChecker(5 * time.Second)
+	checker := NewChecker(5 * time.Second)
 
 	maxNotifications := 3
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxNotifications, 1, 0, slog.Default())
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, maxNotifications, 1, 0, DigestConfig{}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,9 +478,9 @@ func TestCheckAndNotifyRecovery(t *testing.T) {
 	store := newMockStore()
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
-	checker := NewHTTPChecker(5 * time.Second)
+	checker := NewChecker(5 * time.Second)
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0, slog.Default())
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0, DigestConfig{}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,9 +504,9 @@ func TestCheckAndNotifyNoRecoveryWhenAlreadyOK(t *testing.T) {
 	store := newMockStore()
 	store.SetEndpoint(storage.Endpoint{ID: 1, URL: srv.URL, IntervalSeconds: 30, Status: "ok"})
 	notifier := &mockNotifier{}
-	checker := NewHTTPChecker(5 * time.Second)
+	checker := NewChecker(5 * time.Second)
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0, slog.Default())
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 1, 0, DigestConfig{}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,7 +677,7 @@ func TestCheckAndNotifyFailureThreshold(t *testing.T) {
 		},
 	}
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 3, 0, slog.Default())
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 3, 3, 0, DigestConfig{}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,7 +745,7 @@ func TestCheckAndNotifyReminder(t *testing.T) {
 	}
 
 	// max 1 notification, reminder every nanosecond (fires on next check).
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 1, 1, time.Nanosecond, slog.Default())
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 1, 1, time.Nanosecond, DigestConfig{}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -736,7 +771,7 @@ func TestCheckAndNotifyNoReminderWhenDisabled(t *testing.T) {
 		},
 	}
 
-	sched, err := NewScheduler(context.Background(), store, checker, notifier, 1, 1, 0, slog.Default())
+	sched, err := NewScheduler(context.Background(), store, checker, notifier, 1, 1, 0, DigestConfig{}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -844,5 +879,31 @@ func TestCertExpiryNoWarningWhenFar(t *testing.T) {
 	sched.checkAndNotify(1)
 	if notifier.certWarnings != 0 {
 		t.Errorf("cert warnings = %d, want 0 (90 days left)", notifier.certWarnings)
+	}
+}
+
+func TestCheckAndNotifySkipsDuringMaintenance(t *testing.T) {
+	store := newMockStore()
+	store.SetEndpoint(storage.Endpoint{ID: 1, URL: "https://example.com", IntervalSeconds: 30, Status: "ok"})
+	store.inMaintenance = true
+	notifier := &mockNotifier{}
+	checker := &mockChecker{
+		checkFn: func(_ context.Context, _ string, _ CheckOptions) CheckResult {
+			return CheckResult{Up: false, StatusCode: 503, Latency: 10 * time.Millisecond, Reason: "HTTP 503"}
+		},
+	}
+
+	sched := newMockScheduler(t, store, checker, notifier, 3)
+	sched.checkAndNotify(1)
+
+	if notifier.failureCount() != 0 {
+		t.Error("should not notify during a maintenance window")
+	}
+	if store.recordedChecks != 0 {
+		t.Error("should not record checks during a maintenance window")
+	}
+	ep, _ := store.GetEndpoint(context.Background(), 1)
+	if ep.Status != "ok" {
+		t.Errorf("status = %q, want ok (untouched during maintenance)", ep.Status)
 	}
 }

@@ -25,6 +25,9 @@ type Store interface {
 	TouchCertWarning(ctx context.Context, id int64) error
 	RecordCheck(ctx context.Context, endpointID int64, up bool, statusCode int, latencyMs int64) error
 	PruneChecks(ctx context.Context, olderThan time.Time) (int64, error)
+	IsInMaintenance(ctx context.Context, endpointID int64, now time.Time) (bool, error)
+	ListEndpoints(ctx context.Context) ([]storage.Endpoint, error)
+	GetCheckStats(ctx context.Context, endpointID int64, since time.Time) (storage.WindowStats, error)
 }
 
 // Checker performs HTTP health checks.
@@ -39,6 +42,7 @@ type Notifier interface {
 	NotifyFailure(ctx context.Context, endpoint storage.Endpoint) (int64, error)
 	NotifyRecovery(ctx context.Context, endpoint storage.Endpoint, downtime time.Duration) error
 	NotifyCertExpiry(ctx context.Context, endpoint storage.Endpoint, daysLeft int) error
+	NotifyDigest(ctx context.Context, text string) error
 }
 
 // certWarningDays is how close to expiry a certificate must be to warn.
@@ -59,6 +63,8 @@ type Scheduler struct {
 	maxFailureNotifications int
 	failureThreshold        int
 	reminderInterval        time.Duration
+	digest                  DigestConfig
+	metrics                 *Metrics
 	ctx                     context.Context
 	logger                  *slog.Logger
 }
@@ -66,9 +72,10 @@ type Scheduler struct {
 // NewScheduler creates a Scheduler. Call Start() to begin running jobs.
 // failureThreshold is how many consecutive failures must occur before the
 // first alert is sent (1 = alert on the first failure). reminderInterval
-// controls "still down" re-alerts (0 = disabled). logger is scoped with a
+// controls "still down" re-alerts (0 = disabled). digest enables the periodic
+// uptime digest (zero DigestConfig = disabled). logger is scoped with a
 // "component" attribute by the caller; nil falls back to slog.Default().
-func NewScheduler(ctx context.Context, store Store, checker Checker, notifier Notifier, maxFailureNotifications int, failureThreshold int, reminderInterval time.Duration, logger *slog.Logger) (*Scheduler, error) {
+func NewScheduler(ctx context.Context, store Store, checker Checker, notifier Notifier, maxFailureNotifications int, failureThreshold int, reminderInterval time.Duration, digest DigestConfig, logger *slog.Logger) (*Scheduler, error) {
 	cron, err := gocron.NewScheduler()
 	if err != nil {
 		return nil, fmt.Errorf("create gocron scheduler: %w", err)
@@ -84,6 +91,7 @@ func NewScheduler(ctx context.Context, store Store, checker Checker, notifier No
 		maxFailureNotifications: maxFailureNotifications,
 		failureThreshold:        failureThreshold,
 		reminderInterval:        reminderInterval,
+		digest:                  digest,
 		ctx:                     ctx,
 		logger:                  logger,
 	}
@@ -110,13 +118,52 @@ func NewScheduler(ctx context.Context, store Store, checker Checker, notifier No
 		return nil, fmt.Errorf("add prune-checks job: %w", err)
 	}
 
+	// Periodic uptime digest (daily, or weekly on Mondays), UTC.
+	if digest.Mode != "" {
+		expr := fmt.Sprintf("%d %d * * *", digest.TimeMinutes%60, digest.TimeMinutes/60)
+		if digest.Mode == "weekly" {
+			expr = fmt.Sprintf("%d %d * * 1", digest.TimeMinutes%60, digest.TimeMinutes/60)
+		}
+		_, err = cron.NewJob(
+			gocron.CronJob(expr, false),
+			gocron.NewTask(s.sendDigest),
+			gocron.WithTags("internal-digest"),
+			gocron.WithSingletonMode(gocron.LimitModeReschedule),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("add digest job: %w", err)
+		}
+	}
+
 	return s, nil
+}
+
+// sendDigest builds the uptime digest for the configured window and sends it.
+func (s *Scheduler) sendDigest() {
+	text, err := BuildDigest(s.ctx, s.store, s.digest.Window())
+	if err != nil {
+		s.logger.Error("build digest", "error", err)
+		return
+	}
+	if text == "" {
+		return
+	}
+	if err := s.notifier.NotifyDigest(s.ctx, text); err != nil {
+		s.logger.Error("send digest", "error", err)
+		return
+	}
+	s.logger.Info("digest sent", "mode", s.digest.Mode)
 }
 
 // Start begins running scheduled jobs.
 func (s *Scheduler) Start() {
 	s.cron.Start()
 	s.logger.Info("scheduler started")
+}
+
+// SetMetrics attaches Prometheus instrumentation (nil disables it).
+func (s *Scheduler) SetMetrics(m *Metrics) {
+	s.metrics = m
 }
 
 // Add creates a gocron job for the given endpoint.
@@ -134,6 +181,9 @@ func (s *Scheduler) Add(ctx context.Context, ep storage.Endpoint) error {
 	if err != nil {
 		return fmt.Errorf("add job for endpoint %d: %w", ep.ID, err)
 	}
+	if s.metrics != nil {
+		s.metrics.SetEndpointInfo(ep.Name, ep.URL)
+	}
 	return nil
 }
 
@@ -141,6 +191,13 @@ func (s *Scheduler) Add(ctx context.Context, ep storage.Endpoint) error {
 func (s *Scheduler) Remove(endpointID int64) error {
 	tag := fmt.Sprintf("endpoint-%d", endpointID)
 	s.cron.RemoveByTags(tag)
+	if s.metrics != nil {
+		// The bot removes the job before deleting the row, so the name is
+		// usually still available for metric cleanup; if not, skip silently.
+		if ep, err := s.store.GetEndpoint(s.ctx, endpointID); err == nil {
+			s.metrics.RemoveEndpoint(ep.Name)
+		}
+	}
 	return nil
 }
 
@@ -164,6 +221,17 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 		return
 	}
 
+	// Scheduled checks are skipped entirely inside a maintenance window —
+	// no request, no history row, no alert. A failed window lookup must not
+	// silence monitoring, so on error we check anyway.
+	inMaint, err := s.store.IsInMaintenance(ctx, endpointID, time.Now().UTC())
+	if err != nil {
+		s.logger.Error("check maintenance window", "id", endpointID, "error", err)
+	} else if inMaint {
+		s.logger.Debug("in maintenance window, skipping check", "id", endpointID, "name", ep.Name)
+		return
+	}
+
 	log := s.logger.With("id", ep.ID, "name", ep.Name, "url", ep.URL)
 
 	res := s.checker.Check(ctx, ep.URL, CheckOptions{
@@ -173,7 +241,7 @@ func (s *Scheduler) checkAndNotify(endpointID int64) {
 	outcome := outcomeFromResult(res)
 	latencyMs := res.Latency.Milliseconds()
 	statusCode := res.StatusCode
-	s.recordCheck(ctx, endpointID, res)
+	s.recordCheck(ctx, ep, res)
 
 	if !res.Up {
 		// NOT_OK
@@ -310,7 +378,7 @@ func (s *Scheduler) CheckNow(ctx context.Context, endpointID int64) (storage.End
 		Keyword:        ep.ExpectedKeyword,
 	})
 	outcome := outcomeFromResult(res)
-	s.recordCheck(ctx, endpointID, res)
+	s.recordCheck(ctx, ep, res)
 
 	if !res.Up {
 		if err := s.store.UpdateEndpointStatus(ctx, endpointID, outcome); err != nil {
@@ -357,11 +425,14 @@ func (s *Scheduler) resumeExpiredPauses() {
 	}
 }
 
-// recordCheck appends a result to the check history (stats). Failures are
-// logged but never block the monitoring flow.
-func (s *Scheduler) recordCheck(ctx context.Context, endpointID int64, res CheckResult) {
-	if err := s.store.RecordCheck(ctx, endpointID, res.Up, res.StatusCode, res.Latency.Milliseconds()); err != nil {
-		s.logger.Error("record check", "id", endpointID, "error", err)
+// recordCheck appends a result to the check history and records metrics.
+// Storage failures are logged but never block the monitoring flow.
+func (s *Scheduler) recordCheck(ctx context.Context, ep storage.Endpoint, res CheckResult) {
+	if s.metrics != nil {
+		s.metrics.RecordCheck(ep.Name, res.Up, res.Latency)
+	}
+	if err := s.store.RecordCheck(ctx, ep.ID, res.Up, res.StatusCode, res.Latency.Milliseconds()); err != nil {
+		s.logger.Error("record check", "id", ep.ID, "error", err)
 	}
 }
 

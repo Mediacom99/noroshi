@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -879,8 +880,39 @@ func TestHandleKeyword(t *testing.T) {
 	if setTo != `"status":"ok"` {
 		t.Errorf("keyword set to %q", setTo)
 	}
-	if !strings.Contains(mc.sentMessages[0], "must now contain") {
+	if !strings.Contains(mc.sentMessages[0], "Keyword check") {
 		t.Errorf("got: %s", mc.sentMessages[0])
+	}
+
+	// Regex specs are accepted when they compile.
+	mc = &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: `prod-api re:version-[0-9]+`} }}
+	if err := b.handleKeyword(mc); err != nil {
+		t.Fatalf("handleKeyword regex: %v", err)
+	}
+	if setTo != `re:version-[0-9]+` {
+		t.Errorf("keyword set to %q", setTo)
+	}
+
+	// Invalid regex is rejected before persisting.
+	setTo = ""
+	mc = &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: `prod-api re:[unclosed`} }}
+	if err := b.handleKeyword(mc); err != nil {
+		t.Fatalf("handleKeyword invalid regex: %v", err)
+	}
+	if setTo != "" {
+		t.Errorf("invalid regex should not be persisted, got %q", setTo)
+	}
+	if !strings.Contains(mc.sentMessages[0], "Invalid regex") {
+		t.Errorf("got: %s", mc.sentMessages[0])
+	}
+
+	// Negated substring is accepted.
+	mc = &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: `prod-api !fatal error`} }}
+	if err := b.handleKeyword(mc); err != nil {
+		t.Fatalf("handleKeyword negated: %v", err)
+	}
+	if setTo != "!fatal error" {
+		t.Errorf("keyword set to %q", setTo)
 	}
 
 	mc = &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: "prod-api off"} }}
@@ -1017,4 +1049,170 @@ func TestHandleIncidents(t *testing.T) {
 			t.Errorf("incidents message should contain %q, got: %s", want, mc.sentMessages[0])
 		}
 	}
+}
+
+func TestHandleMaint(t *testing.T) {
+	ep := storage.Endpoint{ID: 1, Name: "prod-api", URL: "https://example.com", Status: "ok"}
+
+	t.Run("add per-endpoint", func(t *testing.T) {
+		var gotDays string
+		var gotStart, gotEnd int
+		var gotEndpointID sql.NullInt64
+		store := &mockStore{
+			getEndpointByNameFn: func(_ context.Context, _ string) (storage.Endpoint, error) { return ep, nil },
+			addMaintenanceWindowFn: func(_ context.Context, endpointID sql.NullInt64, days string, start, end int) (storage.MaintenanceWindow, error) {
+				gotEndpointID, gotDays, gotStart, gotEnd = endpointID, days, start, end
+				return storage.MaintenanceWindow{ID: 1, EndpointID: endpointID, Days: days, StartMinutes: start, EndMinutes: end}, nil
+			},
+		}
+		b := newTestBot(store, &mockScheduler{})
+		mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: "add prod-api sat,sun 02:00-04:00"} }}
+		if err := b.handleMaint(mc); err != nil {
+			t.Fatalf("handleMaint: %v", err)
+		}
+		if !gotEndpointID.Valid || gotEndpointID.Int64 != 1 {
+			t.Errorf("endpointID = %+v, want {1 true}", gotEndpointID)
+		}
+		if gotDays != "sat,sun" || gotStart != 120 || gotEnd != 240 {
+			t.Errorf("got days=%q start=%d end=%d", gotDays, gotStart, gotEnd)
+		}
+		if !strings.Contains(mc.sentMessages[0], "Maintenance window #1") {
+			t.Errorf("got: %s", mc.sentMessages[0])
+		}
+	})
+
+	t.Run("add global", func(t *testing.T) {
+		var gotEndpointID sql.NullInt64
+		store := &mockStore{
+			addMaintenanceWindowFn: func(_ context.Context, endpointID sql.NullInt64, days string, start, end int) (storage.MaintenanceWindow, error) {
+				gotEndpointID = endpointID
+				return storage.MaintenanceWindow{ID: 2, EndpointID: endpointID, Days: days, StartMinutes: start, EndMinutes: end}, nil
+			},
+		}
+		b := newTestBot(store, &mockScheduler{})
+		mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: "add all all 22:00-02:00"} }}
+		if err := b.handleMaint(mc); err != nil {
+			t.Fatalf("handleMaint: %v", err)
+		}
+		if gotEndpointID.Valid {
+			t.Errorf("endpointID = %+v, want NULL for 'all'", gotEndpointID)
+		}
+		if !strings.Contains(mc.sentMessages[0], "all endpoints") {
+			t.Errorf("got: %s", mc.sentMessages[0])
+		}
+	})
+
+	t.Run("add invalid args", func(t *testing.T) {
+		store := &mockStore{}
+		b := newTestBot(store, &mockScheduler{})
+		for _, payload := range []string{
+			"add prod-api funday 02:00-04:00",   // invalid day
+			"add prod-api sat 02:00-02:00",      // zero-length window
+			"add prod-api sat 25:00-04:00",      // invalid hour
+			"add prod-api sat 0200-0400",        // bad format
+			"add prod-api sat",                  // missing time range
+		} {
+			mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: payload} }}
+			if err := b.handleMaint(mc); err != nil {
+				t.Fatalf("handleMaint(%q): %v", payload, err)
+			}
+			if len(mc.sentMessages) == 0 {
+				t.Errorf("handleMaint(%q): expected an error reply", payload)
+			}
+		}
+	})
+
+	t.Run("list", func(t *testing.T) {
+		store := &mockStore{
+			listMaintenanceWindowsFn: func(_ context.Context) ([]storage.MaintenanceWindow, error) {
+				return []storage.MaintenanceWindow{
+					{ID: 1, Days: "all", StartMinutes: 60, EndMinutes: 120},
+					{ID: 2, EndpointID: sql.NullInt64{Int64: 1, Valid: true}, Days: "sat,sun", StartMinutes: 1320, EndMinutes: 240},
+				}, nil
+			},
+			listEndpointsFn: func(_ context.Context) ([]storage.Endpoint, error) {
+				return []storage.Endpoint{ep}, nil
+			},
+		}
+		b := newTestBot(store, &mockScheduler{})
+		mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: "list"} }}
+		if err := b.handleMaint(mc); err != nil {
+			t.Fatalf("handleMaint: %v", err)
+		}
+		got := mc.sentMessages[0]
+		for _, want := range []string{"#1", "all endpoints", "#2", "prod-api", "22:00–04:00"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("list output missing %q: %s", want, got)
+			}
+		}
+	})
+
+	t.Run("del", func(t *testing.T) {
+		var deletedID int64
+		store := &mockStore{
+			deleteMaintenanceWindowFn: func(_ context.Context, id int64) error {
+				deletedID = id
+				return nil
+			},
+		}
+		b := newTestBot(store, &mockScheduler{})
+		mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: "del 5"} }}
+		if err := b.handleMaint(mc); err != nil {
+			t.Fatalf("handleMaint: %v", err)
+		}
+		if deletedID != 5 {
+			t.Errorf("deletedID = %d, want 5", deletedID)
+		}
+	})
+
+	t.Run("del not found", func(t *testing.T) {
+		store := &mockStore{
+			deleteMaintenanceWindowFn: func(_ context.Context, _ int64) error {
+				return apperror.Wrap(apperror.ErrNotFound, errors.New("no row"))
+			},
+		}
+		b := newTestBot(store, &mockScheduler{})
+		mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{Payload: "del 99"} }}
+		if err := b.handleMaint(mc); err != nil {
+			t.Fatalf("handleMaint: %v", err)
+		}
+		if !strings.Contains(mc.sentMessages[0], "not found") {
+			t.Errorf("got: %s", mc.sentMessages[0])
+		}
+	})
+}
+
+func TestHandleDigest(t *testing.T) {
+	t.Run("with endpoints", func(t *testing.T) {
+		store := &mockStore{
+			listEndpointsFn: func(_ context.Context) ([]storage.Endpoint, error) {
+				return []storage.Endpoint{{ID: 1, Name: "prod-api", Status: "ok"}}, nil
+			},
+			getCheckStatsFn: func(_ context.Context, _ int64, _ time.Time) (storage.WindowStats, error) {
+				return storage.WindowStats{Total: 10, Up: 10, AvgLatencyMs: 100}, nil
+			},
+		}
+		b := newTestBot(store, &mockScheduler{})
+		mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{} }}
+		if err := b.handleDigest(mc); err != nil {
+			t.Fatalf("handleDigest: %v", err)
+		}
+		if !strings.Contains(mc.sentMessages[0], "Noroshi digest") || !strings.Contains(mc.sentMessages[0], "prod-api") {
+			t.Errorf("got: %s", mc.sentMessages[0])
+		}
+	})
+
+	t.Run("no endpoints", func(t *testing.T) {
+		store := &mockStore{
+			listEndpointsFn: func(_ context.Context) ([]storage.Endpoint, error) { return nil, nil },
+		}
+		b := newTestBot(store, &mockScheduler{})
+		mc := &mockContext{messageFn: func() *tele.Message { return &tele.Message{} }}
+		if err := b.handleDigest(mc); err != nil {
+			t.Fatalf("handleDigest: %v", err)
+		}
+		if !strings.Contains(mc.sentMessages[0], "No active endpoints") {
+			t.Errorf("got: %s", mc.sentMessages[0])
+		}
+	})
 }

@@ -153,6 +153,11 @@ func (s *SQLiteStore) GetEndpointByName(ctx context.Context, name string) (Endpo
 }
 
 func (s *SQLiteStore) DeleteEndpoint(ctx context.Context, id int64) error {
+	// Foreign keys are not enforced (the DSN doesn't enable the pragma), so
+	// dependent maintenance windows are removed explicitly.
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM maintenance_windows WHERE endpoint_id = ?", id); err != nil {
+		return apperror.Wrap(apperror.ErrDatabase, err)
+	}
 	result, err := s.db.ExecContext(ctx, "DELETE FROM endpoints WHERE id = ?", id)
 	if err != nil {
 		return apperror.Wrap(apperror.ErrDatabase, err)
@@ -565,4 +570,95 @@ func (s *SQLiteStore) PruneChecks(ctx context.Context, olderThan time.Time) (int
 		return 0, apperror.Wrap(apperror.ErrDatabase, err)
 	}
 	return n, nil
+}
+
+
+// AddMaintenanceWindow creates a recurring maintenance window.
+// endpointID NULL means the window applies to all endpoints.
+func (s *SQLiteStore) AddMaintenanceWindow(ctx context.Context, endpointID sql.NullInt64, days string, startMinutes, endMinutes int) (MaintenanceWindow, error) {
+	result, err := s.db.ExecContext(ctx,
+		"INSERT INTO maintenance_windows (endpoint_id, days, start_minutes, end_minutes) VALUES (?, ?, ?, ?)",
+		endpointID, days, startMinutes, endMinutes,
+	)
+	if err != nil {
+		return MaintenanceWindow{}, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return MaintenanceWindow{}, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	return MaintenanceWindow{
+		ID:           id,
+		EndpointID:   endpointID,
+		Days:         days,
+		StartMinutes: startMinutes,
+		EndMinutes:   endMinutes,
+	}, nil
+}
+
+// ListMaintenanceWindows returns all maintenance windows, global ones first.
+func (s *SQLiteStore) ListMaintenanceWindows(ctx context.Context) ([]MaintenanceWindow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id, endpoint_id, days, start_minutes, end_minutes FROM maintenance_windows ORDER BY endpoint_id IS NOT NULL, id",
+	)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	defer rows.Close()
+
+	var windows []MaintenanceWindow
+	for rows.Next() {
+		var w MaintenanceWindow
+		if err := rows.Scan(&w.ID, &w.EndpointID, &w.Days, &w.StartMinutes, &w.EndMinutes); err != nil {
+			return nil, apperror.Wrap(apperror.ErrDatabase, err)
+		}
+		windows = append(windows, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	return windows, nil
+}
+
+// DeleteMaintenanceWindow removes a maintenance window by ID.
+func (s *SQLiteStore) DeleteMaintenanceWindow(ctx context.Context, id int64) error {
+	result, err := s.db.ExecContext(ctx, "DELETE FROM maintenance_windows WHERE id = ?", id)
+	if err != nil {
+		return apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	if n == 0 {
+		return apperror.Wrap(apperror.ErrNotFound, fmt.Errorf("maintenance window %d", id))
+	}
+	return nil
+}
+
+// IsInMaintenance reports whether the endpoint currently falls inside any
+// applicable maintenance window (its own or a global one).
+func (s *SQLiteStore) IsInMaintenance(ctx context.Context, endpointID int64, now time.Time) (bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id, endpoint_id, days, start_minutes, end_minutes FROM maintenance_windows WHERE endpoint_id = ? OR endpoint_id IS NULL",
+		endpointID,
+	)
+	if err != nil {
+		return false, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var w MaintenanceWindow
+		if err := rows.Scan(&w.ID, &w.EndpointID, &w.Days, &w.StartMinutes, &w.EndMinutes); err != nil {
+			return false, apperror.Wrap(apperror.ErrDatabase, err)
+		}
+		if w.Applies(now) {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	return false, nil
 }

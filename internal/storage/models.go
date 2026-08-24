@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -61,4 +62,45 @@ type CheckTransition struct {
 	CheckedAt  time.Time
 	Up         bool
 	StatusCode int
+}
+
+// MaintenanceWindow is a recurring UTC time window during which scheduled
+// checks are skipped. EndpointID NULL means the window applies to every
+// endpoint. StartMinutes/EndMinutes are minutes since midnight UTC; an
+// EndMinutes earlier than StartMinutes is an overnight window (22:00–02:00).
+type MaintenanceWindow struct {
+	ID           int64
+	EndpointID   sql.NullInt64
+	Days         string // "all" or comma-separated "mon,wed,..."
+	StartMinutes int
+	EndMinutes   int
+}
+
+// Applies reports whether now falls inside the window. All times are UTC.
+// Overnight windows after midnight belong to the previous day's schedule.
+func (w MaintenanceWindow) Applies(now time.Time) bool {
+	now = now.UTC()
+	m := now.Hour()*60 + now.Minute()
+
+	dayOK := func(t time.Time) bool {
+		if w.Days == "all" {
+			return true
+		}
+		day := strings.ToLower(t.Weekday().String()[:3])
+		for _, d := range strings.Split(w.Days, ",") {
+			if strings.TrimSpace(d) == day {
+				return true
+			}
+		}
+		return false
+	}
+
+	if w.StartMinutes <= w.EndMinutes {
+		return m >= w.StartMinutes && m < w.EndMinutes && dayOK(now)
+	}
+	// Overnight window: the post-midnight portion belongs to yesterday.
+	if m >= w.StartMinutes {
+		return dayOK(now)
+	}
+	return m < w.EndMinutes && dayOK(now.AddDate(0, 0, -1))
 }

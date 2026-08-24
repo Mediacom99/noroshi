@@ -482,15 +482,43 @@ func FormatHelp() string {
 		"/status — Check everything right now\n" +
 		"/uptime <code>&lt;name or id&gt;</code> — Uptime %, latency stats\n" +
 		"/incidents <code>&lt;name or id&gt;</code> — Recent outages\n" +
+		"/digest — 24h uptime summary\n" +
 		"/pause <code>&lt;name or id&gt;</code> — Silence an endpoint\n" +
-		"/resume <code>&lt;name or id&gt;</code> — Resume monitoring\n\n" +
+		"/resume <code>&lt;name or id&gt;</code> — Resume monitoring\n" +
+		"/maint <code>add|list|del</code> — Recurring maintenance windows (UTC)\n\n" +
 		"<b>Manage</b>\n" +
 		"/interval <code>&lt;name or id&gt; &lt;duration&gt;</code> — Change interval\n" +
 		"/expect <code>&lt;name or id&gt; &lt;status|any&gt;</code> — Require exact HTTP status\n" +
-		"/keyword <code>&lt;name or id&gt; &lt;text|off&gt;</code> — Require text in response\n" +
+		"/keyword <code>&lt;name or id&gt; &lt;text|!text|re:pat|off&gt;</code> — Require (or forbid) text/regex in response\n" +
 		"/rename <code>&lt;name or id&gt; &lt;new-name&gt;</code> — Rename endpoint\n" +
 		"/delete <code>&lt;name or id&gt;</code> — Remove endpoint\n" +
+		"/export — Download config as JSON\n" +
 		"/help — This message\n\n" +
 		"<b>Intervals:</b> 10s · 30s · 1m · 5m · 1h (min 10s)\n" +
 		"<b>Tip:</b> tap an endpoint in /list for actions"
+}
+
+// FormatMaintList renders the /maint list output. endpointNames maps endpoint
+// IDs to names for per-endpoint windows; unknown IDs render as the raw ID.
+func FormatMaintList(windows []storage.MaintenanceWindow, endpointNames map[int64]string) string {
+	if len(windows) == 0 {
+		return "🔧 No maintenance windows configured.\nAdd one with /maint add <code>&lt;name|all&gt; &lt;days&gt; &lt;HH:MM-HH:MM&gt;</code> (UTC)."
+	}
+	var b strings.Builder
+	b.WriteString("🔧 <b>Maintenance windows</b> (UTC)\n")
+	for _, w := range windows {
+		target := "all endpoints"
+		if w.EndpointID.Valid {
+			if name, ok := endpointNames[w.EndpointID.Int64]; ok {
+				target = name
+			} else {
+				target = fmt.Sprintf("endpoint #%d", w.EndpointID.Int64)
+			}
+		}
+		fmt.Fprintf(&b, "\n#%d · <b>%s</b> — %s · %02d:%02d–%02d:%02d",
+			w.ID, htmlEscape(target), htmlEscape(w.Days),
+			w.StartMinutes/60, w.StartMinutes%60, w.EndMinutes/60, w.EndMinutes%60)
+	}
+	b.WriteString("\n\nDelete with /maint del <code>&lt;id&gt;</code>")
+	return b.String()
 }

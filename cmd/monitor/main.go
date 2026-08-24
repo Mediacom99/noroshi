@@ -49,20 +49,35 @@ func main() {
 	store := storage.NewSQLiteStore(db)
 
 	// Create checker
-	checker := monitor.NewHTTPChecker(cfg.HTTPTimeout)
+	checker := monitor.NewChecker(cfg.HTTPTimeout)
 
 	// Create bot (without scheduler — circular dependency resolution)
-	teleBot, err := bot.NewBot(cfg.TelegramToken, cfg.TelegramChatID, store, checker, cfg.SlowThresholdMs, ctx, base.With("component", "bot"))
+	var webhookCfg *bot.WebhookConfig
+	if cfg.TelegramWebhookURL != "" {
+		webhookCfg = &bot.WebhookConfig{
+			PublicURL: cfg.TelegramWebhookURL,
+			Port:      cfg.TelegramWebhookPort,
+			Secret:    cfg.TelegramWebhookSecret,
+		}
+	}
+	teleBot, err := bot.NewBot(cfg.TelegramToken, cfg.TelegramChatID, store, checker, cfg.SlowThresholdMs, webhookCfg, ctx, base.With("component", "bot"))
 	if err != nil {
 		log.Error("create bot", "error", err)
 		os.Exit(1)
 	}
 
-	// Create notifier from bot
-	notifier := bot.NewTelegramNotifier(teleBot, cfg.MaxFailureNotifications)
+	// Create notifier from bot (Telegram is always first — its message ID is
+	// used to thread recovery messages), plus the generic webhook if configured.
+	telegramNotifier := bot.NewTelegramNotifier(teleBot, cfg.MaxFailureNotifications)
+	notifiers := []monitor.Notifier{telegramNotifier}
+	if cfg.AlertWebhookURL != "" {
+		notifiers = append(notifiers, monitor.NewWebhookNotifier(cfg.AlertWebhookURL, cfg.AlertWebhookToken))
+	}
+	notifier := monitor.NewMultiNotifier(base.With("component", "notifier"), notifiers...)
 
 	// Create scheduler with notifier
-	scheduler, err := monitor.NewScheduler(ctx, store, checker, notifier, cfg.MaxFailureNotifications, cfg.FailureThreshold, cfg.ReminderInterval, base.With("component", "scheduler"))
+	scheduler, err := monitor.NewScheduler(ctx, store, checker, notifier, cfg.MaxFailureNotifications, cfg.FailureThreshold, cfg.ReminderInterval,
+		monitor.DigestConfig{Mode: cfg.Digest, TimeMinutes: cfg.DigestTimeMinutes}, base.With("component", "scheduler"))
 	if err != nil {
 		log.Error("create scheduler", "error", err)
 		os.Exit(1)
@@ -70,6 +85,10 @@ func main() {
 
 	// Close circular dependency
 	teleBot.SetScheduler(scheduler)
+
+	// Prometheus instrumentation (scraped via GET /metrics on the health server)
+	metrics := monitor.NewMetrics()
+	scheduler.SetMetrics(metrics)
 
 	// Load existing endpoints and add to scheduler
 	endpoints, err := store.ListEndpoints(ctx)
@@ -98,7 +117,7 @@ func main() {
 	teleBot.Start()
 
 	// Start health server
-	healthSrv := startHealthServer(cfg.HealthPort, store, log)
+	healthSrv := startHealthServer(cfg.HealthPort, store, metrics, log)
 
 	// Wait for shutdown signal
 	<-ctx.Done()
@@ -118,13 +137,18 @@ func main() {
 	log.Info("shutdown complete")
 }
 
-func startHealthServer(port int, store *storage.SQLiteStore, log *slog.Logger) *http.Server {
+func startHealthServer(port int, store *storage.SQLiteStore, metrics *monitor.Metrics, log *slog.Logger) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	// Prometheus scrape endpoint (unauthenticated, like the badges).
+	if metrics != nil {
+		mux.Handle("GET /metrics", metrics.Handler())
+	}
 
 	// Shields-style status badge: /badge/<name>.svg
 	mux.HandleFunc("GET /badge/{name}", func(w http.ResponseWriter, r *http.Request) {

@@ -15,7 +15,7 @@ func TestCheckerOK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	checker := NewHTTPChecker(5 * time.Second)
+	checker := NewChecker(5 * time.Second)
 	res := checker.Check(context.Background(), srv.URL, CheckOptions{})
 	if res.Err != nil {
 		t.Fatalf("Check: %v", res.Err)
@@ -37,7 +37,7 @@ func TestChecker503(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	checker := NewHTTPChecker(5 * time.Second)
+	checker := NewChecker(5 * time.Second)
 	// With PassthroughErrorHandler, retryablehttp returns the last response
 	res := checker.Check(context.Background(), srv.URL, CheckOptions{})
 	if res.Err != nil {
@@ -60,7 +60,7 @@ func TestCheckerExpectedStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	checker := NewHTTPChecker(5 * time.Second)
+	checker := NewChecker(5 * time.Second)
 
 	// 204 matches the expectation.
 	res := checker.Check(context.Background(), srv.URL, CheckOptions{ExpectedStatus: 204})
@@ -91,7 +91,7 @@ func TestCheckerKeyword(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	checker := NewHTTPChecker(5 * time.Second)
+	checker := NewChecker(5 * time.Second)
 
 	res := checker.Check(context.Background(), srv.URL, CheckOptions{Keyword: `"status":"ok"`})
 	if !res.Up {
@@ -107,13 +107,51 @@ func TestCheckerKeyword(t *testing.T) {
 	}
 }
 
+func TestCheckerKeywordModes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"version":"2.1","status":"ok"}`))
+	}))
+	defer srv.Close()
+
+	checker := NewChecker(5 * time.Second)
+	tests := []struct {
+		name       string
+		keyword    string
+		wantUp     bool
+		wantReason string
+	}{
+		{"substring present", `"status":"ok"`, true, ""},
+		{"substring missing", `fatal`, false, `keyword "fatal" not found`},
+		{"negated absent", "!fatal", true, ""},
+		{"negated present", `!"status":"ok"`, false, `forbidden keyword "\"status\":\"ok\"" found`},
+		{"regex match", `re:"version":"2\.\d+`, true, ""},
+		{"regex no match", `re:"version":"3\.`, false, `pattern "\"version\":\"3\\." did not match`},
+		{"negated regex no match", `!re:"version":"3\.`, true, ""},
+		{"negated regex match", `!re:"version":"2\.`, false, `forbidden pattern "\"version\":\"2\\." matched`},
+		{"invalid regex", `re:[unclosed`, false, `invalid regex "[unclosed"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := checker.Check(context.Background(), srv.URL, CheckOptions{Keyword: tt.keyword})
+			if res.Up != tt.wantUp {
+				t.Errorf("Up = %v, want %v (reason: %s)", res.Up, tt.wantUp, res.Reason)
+			}
+			if !tt.wantUp && res.Reason != tt.wantReason {
+				t.Errorf("Reason = %q, want %q", res.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestCheckerCertExpiry(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
-	checker := NewHTTPChecker(5 * time.Second)
+	checker := NewChecker(5 * time.Second)
 	// Trust the test server's certificate.
 	checker.client.HTTPClient.Transport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test only
 
@@ -127,7 +165,7 @@ func TestCheckerCertExpiry(t *testing.T) {
 }
 
 func TestCheckerUnreachable(t *testing.T) {
-	checker := NewHTTPChecker(1 * time.Second)
+	checker := NewChecker(1 * time.Second)
 	// Use a port that is not listening
 	res := checker.Check(context.Background(), "http://127.0.0.1:1", CheckOptions{})
 	if res.Err == nil {
@@ -151,7 +189,7 @@ func TestCheckerCancelledContext(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	checker := NewHTTPChecker(30 * time.Second)
+	checker := NewChecker(30 * time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 

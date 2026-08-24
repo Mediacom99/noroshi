@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -17,6 +18,13 @@ type Config struct {
 	FailureThreshold        int
 	SlowThresholdMs         int64
 	ReminderInterval        time.Duration
+	Digest                  string // "", "daily" or "weekly"
+	DigestTimeMinutes       int    // minutes since midnight UTC
+	AlertWebhookURL         string // generic alert webhook; "" = disabled
+	AlertWebhookToken       string // optional Bearer token for the webhook
+	TelegramWebhookURL      string // public https URL for Telegram webhook mode; "" = long polling
+	TelegramWebhookPort     int    // local listen port for webhook mode
+	TelegramWebhookSecret   string // verified against X-Telegram-Bot-Api-Secret-Token
 	LogLevel                string
 	HealthPort              int
 }
@@ -99,6 +107,24 @@ func Load() (*Config, error) {
 		logLevel = "info"
 	}
 
+	digest := os.Getenv("DIGEST")
+	switch digest {
+	case "", "off":
+		digest = ""
+	case "daily", "weekly":
+	default:
+		return nil, fmt.Errorf("DIGEST must be daily, weekly or off")
+	}
+
+	digestTimeMinutes := 9 * 60
+	if v := os.Getenv("DIGEST_TIME"); v != "" {
+		var h, m int
+		if _, err := fmt.Sscanf(v, "%d:%d", &h, &m); err != nil || h < 0 || h > 23 || m < 0 || m > 59 {
+			return nil, fmt.Errorf("DIGEST_TIME must be HH:MM (00:00-23:59, UTC)")
+		}
+		digestTimeMinutes = h*60 + m
+	}
+
 	healthPort := 8080
 	if v := os.Getenv("HEALTH_PORT"); v != "" {
 		healthPort, err = strconv.Atoi(v)
@@ -106,6 +132,31 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("HEALTH_PORT must be a valid integer: %w", err)
 		}
 	}
+
+	alertWebhookURL := os.Getenv("ALERT_WEBHOOK_URL")
+	if alertWebhookURL != "" {
+		parsed, err := url.Parse(alertWebhookURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return nil, fmt.Errorf("ALERT_WEBHOOK_URL must be a valid http(s) URL")
+		}
+	}
+	alertWebhookToken := os.Getenv("ALERT_WEBHOOK_TOKEN")
+
+	telegramWebhookURL := os.Getenv("TELEGRAM_WEBHOOK_URL")
+	telegramWebhookPort := 8081
+	if telegramWebhookURL != "" {
+		parsed, err := url.Parse(telegramWebhookURL)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return nil, fmt.Errorf("TELEGRAM_WEBHOOK_URL must be a valid https URL (Telegram requires TLS, e.g. behind a reverse proxy)")
+		}
+		if v := os.Getenv("TELEGRAM_WEBHOOK_PORT"); v != "" {
+			telegramWebhookPort, err = strconv.Atoi(v)
+			if err != nil {
+				return nil, fmt.Errorf("TELEGRAM_WEBHOOK_PORT must be a valid integer: %w", err)
+			}
+		}
+	}
+	telegramWebhookSecret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
 
 	return &Config{
 		TelegramToken:           token,
@@ -116,6 +167,13 @@ func Load() (*Config, error) {
 		FailureThreshold:        failureThreshold,
 		SlowThresholdMs:         slowThresholdMs,
 		ReminderInterval:        reminderInterval,
+		Digest:                  digest,
+		DigestTimeMinutes:       digestTimeMinutes,
+		AlertWebhookURL:         alertWebhookURL,
+		AlertWebhookToken:       alertWebhookToken,
+		TelegramWebhookURL:      telegramWebhookURL,
+		TelegramWebhookPort:     telegramWebhookPort,
+		TelegramWebhookSecret:   telegramWebhookSecret,
 		LogLevel:                logLevel,
 		HealthPort:              healthPort,
 	}, nil

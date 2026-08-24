@@ -4,10 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
 )
 
 // maxKeywordBodySize caps how much of the response body is read for keyword matching.
@@ -29,13 +34,15 @@ type CheckResult struct {
 	Err        error     // transport-level error, if any
 }
 
-// HTTPChecker performs HTTP health checks using retryablehttp.
-type HTTPChecker struct {
-	client *retryablehttp.Client
+// SchemeChecker performs health checks, dispatching on the URL scheme:
+// http/https use retryablehttp, tcp/dns/ping use the net package.
+type SchemeChecker struct {
+	client  *retryablehttp.Client
+	timeout time.Duration
 }
 
-// NewHTTPChecker creates a HTTPChecker with retryablehttp configured per DESIGN.md.
-func NewHTTPChecker(timeout time.Duration) *HTTPChecker {
+// NewChecker creates a SchemeChecker with retryablehttp configured per DESIGN.md.
+func NewChecker(timeout time.Duration) *SchemeChecker {
 	client := retryablehttp.NewClient()
 	client.RetryMax = 2
 	client.RetryWaitMin = 500 * time.Millisecond
@@ -44,13 +51,149 @@ func NewHTTPChecker(timeout time.Duration) *HTTPChecker {
 	client.Logger = nil
 	// Return the last response instead of an error after retries exhausted
 	client.ErrorHandler = retryablehttp.PassthroughErrorHandler
-	return &HTTPChecker{client: client}
+	return &SchemeChecker{client: client, timeout: timeout}
 }
 
-// Check performs a GET request and evaluates the response against opts.
+// Check dispatches on the URL scheme: tcp://, dns://, and ping:// use
+// scheme-specific probes (CheckOptions expectations apply to HTTP only);
+// anything else is treated as HTTP(S).
+func (c *SchemeChecker) Check(ctx context.Context, url string, opts CheckOptions) CheckResult {
+	scheme, _, _ := strings.Cut(url, "://")
+	switch scheme {
+	case "tcp":
+		return c.checkTCP(ctx, url)
+	case "dns":
+		return c.checkDNS(ctx, url)
+	case "ping":
+		return c.checkPing(ctx, url)
+	default:
+		return c.checkHTTP(ctx, url, opts)
+	}
+}
+
+// checkTCP reports up when a TCP connection to the host:port target succeeds.
+func (c *SchemeChecker) checkTCP(ctx context.Context, rawURL string) CheckResult {
+	res := CheckResult{}
+	addr := strings.TrimPrefix(rawURL, "tcp://")
+
+	start := time.Now()
+	conn, err := (&net.Dialer{Timeout: c.timeout}).DialContext(ctx, "tcp", addr)
+	res.Latency = time.Since(start)
+	if err != nil {
+		res.Reason = "connection error"
+		res.Err = err
+		return res
+	}
+	_ = conn.Close()
+
+	res.Up = true
+	return res
+}
+
+// checkDNS reports up when the hostname resolves to at least one address.
+func (c *SchemeChecker) checkDNS(ctx context.Context, rawURL string) CheckResult {
+	res := CheckResult{}
+	host := strings.TrimPrefix(rawURL, "dns://")
+
+	start := time.Now()
+	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
+	res.Latency = time.Since(start)
+	if err != nil {
+		res.Reason = "dns lookup failed"
+		res.Err = err
+		return res
+	}
+	if len(addrs) == 0 {
+		res.Reason = "no DNS records"
+		return res
+	}
+
+	res.Up = true
+	return res
+}
+
+// checkPing reports up when the host answers an ICMP echo request. Uses
+// unprivileged datagram ICMP (udp4), which requires the host's
+// net.ipv4.ping_group_range to allow it (default on most Linux).
+func (c *SchemeChecker) checkPing(ctx context.Context, rawURL string) CheckResult {
+	res := CheckResult{}
+	host := strings.TrimPrefix(rawURL, "ping://")
+
+	ip, err := net.ResolveIPAddr("ip4", host)
+	if err != nil {
+		res.Reason = "dns lookup failed"
+		res.Err = err
+		return res
+	}
+
+	conn, err := icmp.ListenPacket("udp4", "0.0.0.0")
+	if err != nil {
+		res.Reason = "ping not permitted"
+		res.Err = err
+		return res
+	}
+	defer conn.Close()
+
+	id := os.Getpid() & 0xffff
+	msg := icmp.Message{
+		Type: ipv4.ICMPTypeEcho,
+		Code: 0,
+		Body: &icmp.Echo{ID: id, Seq: 1, Data: []byte("noroshi")},
+	}
+	wb, err := msg.Marshal(nil)
+	if err != nil {
+		res.Reason = "ping error"
+		res.Err = err
+		return res
+	}
+
+	deadline := time.Now().Add(c.timeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		res.Reason = "ping error"
+		res.Err = err
+		return res
+	}
+
+	start := time.Now()
+	if _, err := conn.WriteTo(wb, &net.UDPAddr{IP: ip.IP}); err != nil {
+		res.Latency = time.Since(start)
+		res.Reason = "connection error"
+		res.Err = err
+		return res
+	}
+
+	// Read until the matching echo reply arrives (or the deadline passes);
+	// unrelated packets (other processes' pings) are skipped.
+	rb := make([]byte, 1500)
+	for {
+		n, _, err := conn.ReadFrom(rb)
+		res.Latency = time.Since(start)
+		if err != nil {
+			res.Reason = "ping timeout"
+			res.Err = err
+			return res
+		}
+		reply, err := icmp.ParseMessage(1, rb[:n]) // 1 = ICMPv4 protocol number
+		if err != nil {
+			continue
+		}
+		if reply.Type != ipv4.ICMPTypeEchoReply {
+			continue
+		}
+		if echo, ok := reply.Body.(*icmp.Echo); ok && echo.ID == id {
+			res.Up = true
+			return res
+		}
+	}
+}
+
+// checkHTTP performs a GET request and evaluates the response against opts.
 // Transport errors and unmet expectations both result in Up=false with a
 // human-readable Reason.
-func (c *HTTPChecker) Check(ctx context.Context, url string, opts CheckOptions) CheckResult {
+func (c *SchemeChecker) checkHTTP(ctx context.Context, url string, opts CheckOptions) CheckResult {
 	res := CheckResult{}
 
 	req, err := retryablehttp.NewRequestWithContext(ctx, "GET", url, nil)
@@ -99,8 +242,8 @@ func (c *HTTPChecker) Check(ctx context.Context, url string, opts CheckOptions) 
 			res.Err = err
 			return res
 		}
-		if !strings.Contains(string(body), opts.Keyword) {
-			res.Reason = fmt.Sprintf("keyword %q not found", opts.Keyword)
+		if ok, reason := matchKeyword(string(body), opts.Keyword); !ok {
+			res.Reason = reason
 			return res
 		}
 	} else {
@@ -110,4 +253,41 @@ func (c *HTTPChecker) Check(ctx context.Context, url string, opts CheckOptions) 
 
 	res.Up = true
 	return res
+}
+
+// matchKeyword evaluates the body against the keyword spec. Prefixes select
+// the mode: "re:" = body must match the regexp, "!re:" = must not match,
+// "!" = must not contain the substring, no prefix = must contain it.
+// Returns ok=false with a human-readable reason on mismatch or invalid regex.
+func matchKeyword(body, keyword string) (bool, string) {
+	negated := strings.HasPrefix(keyword, "!")
+	spec := strings.TrimPrefix(keyword, "!")
+
+	if pattern, ok := strings.CutPrefix(spec, "re:"); ok {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return false, fmt.Sprintf("invalid regex %q", pattern)
+		}
+		if re.MatchString(body) {
+			if negated {
+				return false, fmt.Sprintf("forbidden pattern %q matched", pattern)
+			}
+			return true, ""
+		}
+		if negated {
+			return true, ""
+		}
+		return false, fmt.Sprintf("pattern %q did not match", pattern)
+	}
+
+	if strings.Contains(body, spec) {
+		if negated {
+			return false, fmt.Sprintf("forbidden keyword %q found", spec)
+		}
+		return true, ""
+	}
+	if negated {
+		return true, ""
+	}
+	return false, fmt.Sprintf("keyword %q not found", spec)
 }

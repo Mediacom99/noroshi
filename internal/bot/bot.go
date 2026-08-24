@@ -29,6 +29,9 @@ type Store interface {
 	RenameEndpoint(ctx context.Context, id int64, newName string) error
 	GetCheckStats(ctx context.Context, endpointID int64, since time.Time) (storage.WindowStats, error)
 	GetRecentTransitions(ctx context.Context, endpointID int64, limit int) ([]storage.CheckTransition, error)
+	AddMaintenanceWindow(ctx context.Context, endpointID sql.NullInt64, days string, startMinutes, endMinutes int) (storage.MaintenanceWindow, error)
+	ListMaintenanceWindows(ctx context.Context) ([]storage.MaintenanceWindow, error)
+	DeleteMaintenanceWindow(ctx context.Context, id int64) error
 }
 
 // Scheduler defines the scheduling methods the bot needs.
@@ -51,21 +54,48 @@ type Bot struct {
 	checker         Checker
 	chatID          int64
 	slowThresholdMs int64
+	webhookMode     bool
 	rootCtx         context.Context
 	logger          *slog.Logger
 }
 
+// WebhookConfig switches the bot from long polling to webhook mode: Telegram
+// POSTs updates to PublicURL (must be https; TLS usually terminates at a
+// reverse proxy), which must forward to the bot's plain-HTTP listener on
+// Port. Secret, when set, is verified against the X-Telegram-Bot-Api-Secret-Token
+// header so only Telegram can inject updates.
+type WebhookConfig struct {
+	PublicURL string
+	Port      int
+	Secret    string
+}
+
+// choosePoller builds the update poller: webhook when configured (registering
+// the public URL with Telegram), long polling otherwise.
+func choosePoller(webhook *WebhookConfig) tele.Poller {
+	if webhook == nil {
+		return &tele.LongPoller{Timeout: 10 * time.Second}
+	}
+	return &tele.Webhook{
+		Listen:      fmt.Sprintf(":%d", webhook.Port),
+		SecretToken: webhook.Secret,
+		DropUpdates: true, // don't replay updates queued while the bot was down
+		Endpoint:    &tele.WebhookEndpoint{PublicURL: webhook.PublicURL},
+	}
+}
+
 // NewBot creates a Bot. SetScheduler must be called before Start.
+// webhook switches to webhook mode when non-nil (nil = long polling).
 // slowThresholdMs marks healthy endpoints as "slow" above this latency (0 = disabled).
 // logger is scoped with a "component" attribute by the caller; nil falls back
 // to slog.Default().
-func NewBot(token string, chatID int64, store Store, checker Checker, slowThresholdMs int64, rootCtx context.Context, logger *slog.Logger) (*Bot, error) {
+func NewBot(token string, chatID int64, store Store, checker Checker, slowThresholdMs int64, webhook *WebhookConfig, rootCtx context.Context, logger *slog.Logger) (*Bot, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	pref := tele.Settings{
 		Token:     token,
-		Poller:    &tele.LongPoller{Timeout: 10 * time.Second},
+		Poller:    choosePoller(webhook),
 		ParseMode: tele.ModeHTML,
 		// Route handler errors through slog instead of telebot's default logger.
 		// "message is not modified" is benign (user tapped refresh with no
@@ -90,6 +120,7 @@ func NewBot(token string, chatID int64, store Store, checker Checker, slowThresh
 		checker:         checker,
 		chatID:          chatID,
 		slowThresholdMs: slowThresholdMs,
+		webhookMode:     webhook != nil,
 		rootCtx:         rootCtx,
 		logger:          logger,
 	}
@@ -110,8 +141,14 @@ func (b *Bot) Start() {
 	b.logger.Info("telegram bot started")
 }
 
-// Stop stops the bot poller.
+// Stop stops the bot poller. In webhook mode the webhook is deregistered
+// first so Telegram stops queueing updates for this instance.
 func (b *Bot) Stop() {
+	if b.webhookMode {
+		if err := b.bot.RemoveWebhook(); err != nil {
+			b.logger.Error("remove webhook", "error", err)
+		}
+	}
 	b.bot.Stop()
 	b.logger.Info("telegram bot stopped")
 }
@@ -128,8 +165,11 @@ func (b *Bot) registerCommands() {
 		{Text: "pause", Description: "Pause monitoring an endpoint"},
 		{Text: "resume", Description: "Resume monitoring an endpoint"},
 		{Text: "expect", Description: "Require an exact HTTP status"},
-		{Text: "keyword", Description: "Require text in the response"},
+		{Text: "keyword", Description: "Require/forbid text or regex in the response"},
 		{Text: "rename", Description: "Rename an endpoint"},
+		{Text: "maint", Description: "Maintenance windows: /maint add|list|del"},
+		{Text: "digest", Description: "24h uptime summary"},
+		{Text: "export", Description: "Export config as JSON"},
 		{Text: "help", Description: "Show help and usage info"},
 	})
 	if err != nil {
@@ -221,4 +261,9 @@ func (n *TelegramNotifier) NotifyRecovery(ctx context.Context, ep storage.Endpoi
 func (n *TelegramNotifier) NotifyCertExpiry(ctx context.Context, ep storage.Endpoint, daysLeft int) error {
 	msg := FormatCertWarning(ep, daysLeft)
 	return n.bot.SendSilentReply(msg, RecoveryKeyboard(ep), 0)
+}
+
+// NotifyDigest sends the periodic uptime digest as a silent message.
+func (n *TelegramNotifier) NotifyDigest(ctx context.Context, text string) error {
+	return n.bot.SendSilentReply(text, nil, 0)
 }

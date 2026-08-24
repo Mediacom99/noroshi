@@ -210,3 +210,153 @@ func TestLoadSlowThresholdAndReminder(t *testing.T) {
 		t.Error("Load() should fail for invalid REMINDER_INTERVAL")
 	}
 }
+
+func TestLoadDigest(t *testing.T) {
+	base := map[string]string{
+		"TELEGRAM_TOKEN":   "test-token",
+		"TELEGRAM_CHAT_ID": "123",
+	}
+
+	t.Run("default off", func(t *testing.T) {
+		setEnv(t, base)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Digest != "" {
+			t.Errorf("Digest = %q, want off", cfg.Digest)
+		}
+		if cfg.DigestTimeMinutes != 9*60 {
+			t.Errorf("DigestTimeMinutes = %d, want 540", cfg.DigestTimeMinutes)
+		}
+	})
+
+	t.Run("weekly with custom time", func(t *testing.T) {
+		setEnv(t, base)
+		t.Setenv("DIGEST", "weekly")
+		t.Setenv("DIGEST_TIME", "07:30")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Digest != "weekly" {
+			t.Errorf("Digest = %q, want weekly", cfg.Digest)
+		}
+		if cfg.DigestTimeMinutes != 7*60+30 {
+			t.Errorf("DigestTimeMinutes = %d, want 450", cfg.DigestTimeMinutes)
+		}
+	})
+
+	t.Run("invalid mode", func(t *testing.T) {
+		setEnv(t, base)
+		t.Setenv("DIGEST", "hourly")
+		if _, err := Load(); err == nil {
+			t.Error("expected error for DIGEST=hourly")
+		}
+	})
+
+	t.Run("invalid time", func(t *testing.T) {
+		setEnv(t, base)
+		t.Setenv("DIGEST_TIME", "25:00")
+		if _, err := Load(); err == nil {
+			t.Error("expected error for DIGEST_TIME=25:00")
+		}
+	})
+}
+
+func TestLoadAlertWebhook(t *testing.T) {
+	base := map[string]string{
+		"TELEGRAM_TOKEN":   "test-token",
+		"TELEGRAM_CHAT_ID": "123",
+	}
+
+	t.Run("default empty", func(t *testing.T) {
+		setEnv(t, base)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.AlertWebhookURL != "" || cfg.AlertWebhookToken != "" {
+			t.Errorf("webhook should be off by default: %+v", cfg)
+		}
+	})
+
+	t.Run("valid url and token", func(t *testing.T) {
+		setEnv(t, base)
+		t.Setenv("ALERT_WEBHOOK_URL", "https://alerts.example.com/hook")
+		t.Setenv("ALERT_WEBHOOK_TOKEN", "secret")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.AlertWebhookURL != "https://alerts.example.com/hook" || cfg.AlertWebhookToken != "secret" {
+			t.Errorf("webhook config: %+v", cfg)
+		}
+	})
+
+	t.Run("invalid url", func(t *testing.T) {
+		setEnv(t, base)
+		t.Setenv("ALERT_WEBHOOK_URL", "not-a-url")
+		if _, err := Load(); err == nil {
+			t.Error("expected error for invalid ALERT_WEBHOOK_URL")
+		}
+	})
+}
+
+func TestLoadTelegramWebhook(t *testing.T) {
+	base := map[string]string{
+		"TELEGRAM_TOKEN":   "test-token",
+		"TELEGRAM_CHAT_ID": "123",
+	}
+
+	t.Run("default long polling", func(t *testing.T) {
+		setEnv(t, base)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.TelegramWebhookURL != "" {
+			t.Errorf("TelegramWebhookURL = %q, want empty (long polling)", cfg.TelegramWebhookURL)
+		}
+		if cfg.TelegramWebhookPort != 8081 {
+			t.Errorf("TelegramWebhookPort = %d, want default 8081", cfg.TelegramWebhookPort)
+		}
+	})
+
+	t.Run("valid webhook config", func(t *testing.T) {
+		setEnv(t, base)
+		t.Setenv("TELEGRAM_WEBHOOK_URL", "https://noroshi.example.com/telegram")
+		t.Setenv("TELEGRAM_WEBHOOK_PORT", "9090")
+		t.Setenv("TELEGRAM_WEBHOOK_SECRET", "s3cret")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.TelegramWebhookURL != "https://noroshi.example.com/telegram" {
+			t.Errorf("TelegramWebhookURL = %q", cfg.TelegramWebhookURL)
+		}
+		if cfg.TelegramWebhookPort != 9090 {
+			t.Errorf("TelegramWebhookPort = %d", cfg.TelegramWebhookPort)
+		}
+		if cfg.TelegramWebhookSecret != "s3cret" {
+			t.Errorf("TelegramWebhookSecret = %q", cfg.TelegramWebhookSecret)
+		}
+	})
+
+	t.Run("http url rejected", func(t *testing.T) {
+		setEnv(t, base)
+		t.Setenv("TELEGRAM_WEBHOOK_URL", "http://noroshi.example.com/telegram")
+		if _, err := Load(); err == nil {
+			t.Error("expected error: webhook URL must be https")
+		}
+	})
+
+	t.Run("invalid port", func(t *testing.T) {
+		setEnv(t, base)
+		t.Setenv("TELEGRAM_WEBHOOK_URL", "https://noroshi.example.com/telegram")
+		t.Setenv("TELEGRAM_WEBHOOK_PORT", "abc")
+		if _, err := Load(); err == nil {
+			t.Error("expected error for invalid TELEGRAM_WEBHOOK_PORT")
+		}
+	})
+}

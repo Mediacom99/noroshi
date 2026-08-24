@@ -745,3 +745,89 @@ func TestOpenDBConcurrentWrites(t *testing.T) {
 		t.Errorf("concurrent write failed: %v", err)
 	}
 }
+
+func TestMaintenanceWindows(t *testing.T) {
+	db := testDB(t)
+	s := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep, err := s.AddEndpoint(ctx, "api", "https://example.com", 60)
+	if err != nil {
+		t.Fatalf("AddEndpoint: %v", err)
+	}
+	other, err := s.AddEndpoint(ctx, "web", "https://example.org", 60)
+	if err != nil {
+		t.Fatalf("AddEndpoint: %v", err)
+	}
+
+	// Per-endpoint window: 02:00–04:00 daily for ep.
+	w1, err := s.AddMaintenanceWindow(ctx, sql.NullInt64{Int64: ep.ID, Valid: true}, "all", 120, 240)
+	if err != nil {
+		t.Fatalf("AddMaintenanceWindow: %v", err)
+	}
+	if w1.ID == 0 || w1.Days != "all" || w1.StartMinutes != 120 || w1.EndMinutes != 240 {
+		t.Errorf("unexpected window: %+v", w1)
+	}
+
+	inside := time.Date(2026, 8, 21, 3, 0, 0, 0, time.UTC)
+	outside := time.Date(2026, 8, 21, 5, 0, 0, 0, time.UTC)
+
+	inMaint, err := s.IsInMaintenance(ctx, ep.ID, inside)
+	if err != nil || !inMaint {
+		t.Errorf("IsInMaintenance(ep, 03:00) = %v, %v; want true", inMaint, err)
+	}
+	inMaint, err = s.IsInMaintenance(ctx, ep.ID, outside)
+	if err != nil || inMaint {
+		t.Errorf("IsInMaintenance(ep, 05:00) = %v, %v; want false", inMaint, err)
+	}
+	inMaint, err = s.IsInMaintenance(ctx, other.ID, inside)
+	if err != nil || inMaint {
+		t.Errorf("IsInMaintenance(other, 03:00) = %v, %v; want false (per-endpoint window)", inMaint, err)
+	}
+
+	// Global window applies to every endpoint.
+	if _, err := s.AddMaintenanceWindow(ctx, sql.NullInt64{}, "all", 0, 1439); err != nil {
+		t.Fatalf("AddMaintenanceWindow global: %v", err)
+	}
+	inMaint, err = s.IsInMaintenance(ctx, other.ID, outside)
+	if err != nil || !inMaint {
+		t.Errorf("IsInMaintenance(other) with global window = %v, %v; want true", inMaint, err)
+	}
+
+	// List: both windows, global first.
+	windows, err := s.ListMaintenanceWindows(ctx)
+	if err != nil {
+		t.Fatalf("ListMaintenanceWindows: %v", err)
+	}
+	if len(windows) != 2 {
+		t.Fatalf("ListMaintenanceWindows returned %d, want 2", len(windows))
+	}
+	if windows[0].EndpointID.Valid {
+		t.Errorf("first window should be the global one (endpoint_id NULL)")
+	}
+
+	// Delete.
+	if err := s.DeleteMaintenanceWindow(ctx, w1.ID); err != nil {
+		t.Fatalf("DeleteMaintenanceWindow: %v", err)
+	}
+	if err := s.DeleteMaintenanceWindow(ctx, w1.ID); !errors.Is(err, apperror.ErrNotFound) {
+		t.Errorf("second delete: got %v, want ErrNotFound", err)
+	}
+
+	// Deleting an endpoint removes its windows (FK cascade is not enforced).
+	if _, err := s.AddMaintenanceWindow(ctx, sql.NullInt64{Int64: ep.ID, Valid: true}, "all", 0, 1439); err != nil {
+		t.Fatalf("AddMaintenanceWindow: %v", err)
+	}
+	if err := s.DeleteEndpoint(ctx, ep.ID); err != nil {
+		t.Fatalf("DeleteEndpoint: %v", err)
+	}
+	windows, err = s.ListMaintenanceWindows(ctx)
+	if err != nil {
+		t.Fatalf("ListMaintenanceWindows: %v", err)
+	}
+	for _, w := range windows {
+		if w.EndpointID.Valid && w.EndpointID.Int64 == ep.ID {
+			t.Errorf("window for deleted endpoint should be gone: %+v", w)
+		}
+	}
+}
