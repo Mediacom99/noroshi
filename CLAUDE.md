@@ -16,8 +16,10 @@ These are the ONLY external dependencies. NEVER add others without explicit appr
 | Scheduling | `github.com/go-co-op/gocron/v2` | NEVER use time.Ticker + goroutine + sync.Mutex |
 | HTTP checks | `github.com/hashicorp/go-retryablehttp` | NEVER use raw net/http for health checks |
 | DB migrations | `github.com/pressly/goose/v3` | NEVER use inline CREATE TABLE statements |
-| Telegram bot | `gopkg.in/telebot.v4` | Long polling, not webhooks |
+| Telegram bot | `gopkg.in/telebot.v4` | Long polling by default; webhook mode optional via `TELEGRAM_WEBHOOK_URL` |
 | SQLite driver | `modernc.org/sqlite` | Pure Go, no CGO |
+| ICMP ping | `golang.org/x/net` | Unprivileged `ping://` checks (`icmp`/`ipv4` subpackages) |
+| Metrics | `github.com/prometheus/client_golang` | `/metrics` endpoint on the health server |
 | SQL interface | `database/sql` | stdlib |
 | Logging | `log/slog` | stdlib |
 | Config | `os.Getenv` | NEVER use config libraries (viper, envconfig, etc.) |
@@ -67,6 +69,12 @@ These are the ONLY external dependencies. NEVER add others without explicit appr
 
 - `CGO_ENABLED=0 go build ./cmd/monitor/`, `go vet ./...`, and `go test ./...` MUST all pass before committing.
 - One logical change per commit. Concise, descriptive commit messages.
+
+## Branch & Release Flow
+
+- Development happens on `develop`; Coolify deploys from `main`.
+- **Deploying = merging `develop` into `main` and pushing.** Always do this when the user asks to deploy.
+- Releases: push a `vX.Y.Z` tag — the release workflow builds and pushes the multi-arch GHCR image.
 
 <!-- GSD:project-start source:PROJECT.md -->
 ## Project
