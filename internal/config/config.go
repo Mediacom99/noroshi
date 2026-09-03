@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,13 +19,15 @@ type Config struct {
 	FailureThreshold        int
 	SlowThresholdMs         int64
 	ReminderInterval        time.Duration
-	Digest                  string // "", "daily" or "weekly"
-	DigestTimeMinutes       int    // minutes since midnight UTC
-	AlertWebhookURL         string // generic alert webhook; "" = disabled
-	AlertWebhookToken       string // optional Bearer token for the webhook
-	TelegramWebhookURL      string // public https URL for Telegram webhook mode; "" = long polling
-	TelegramWebhookPort     int    // local listen port for webhook mode
-	TelegramWebhookSecret   string // verified against X-Telegram-Bot-Api-Secret-Token
+	Digest                  string   // "", "daily" or "weekly"
+	DigestTimeMinutes       int      // minutes since midnight UTC
+	AlertWebhookURL         string   // generic alert webhook; "" = disabled
+	AlertWebhookToken       string   // optional Bearer token for the webhook
+	TelegramWebhookURL      string   // public https URL for Telegram webhook mode; "" = long polling
+	TelegramWebhookPort     int      // local listen port for webhook mode
+	TelegramWebhookSecret   string   // verified against X-Telegram-Bot-Api-Secret-Token
+	DashboardToken          string   // Bearer token for the /api/ dashboard API; "" = API disabled
+	DashboardOrigins        []string // allowed CORS origins for the dashboard API; empty = same-origin only
 	LogLevel                string
 	HealthPort              int
 }
@@ -158,6 +161,16 @@ func Load() (*Config, error) {
 	}
 	telegramWebhookSecret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
 
+	dashboardToken := os.Getenv("DASHBOARD_TOKEN")
+	var dashboardOrigins []string
+	if v := os.Getenv("DASHBOARD_ORIGIN"); v != "" {
+		for _, o := range strings.Split(v, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				dashboardOrigins = append(dashboardOrigins, o)
+			}
+		}
+	}
+
 	return &Config{
 		TelegramToken:           token,
 		TelegramChatID:          chatID,
@@ -174,6 +187,8 @@ func Load() (*Config, error) {
 		TelegramWebhookURL:      telegramWebhookURL,
 		TelegramWebhookPort:     telegramWebhookPort,
 		TelegramWebhookSecret:   telegramWebhookSecret,
+		DashboardToken:          dashboardToken,
+		DashboardOrigins:        dashboardOrigins,
 		LogLevel:                logLevel,
 		HealthPort:              healthPort,
 	}, nil

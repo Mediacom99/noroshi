@@ -555,6 +555,70 @@ func (s *SQLiteStore) GetRecentTransitions(ctx context.Context, endpointID int64
 	return transitions, nil
 }
 
+// GetRecentChecks returns the recorded checks for an endpoint since a given
+// time, oldest first. Used by the dashboard API to render latency history.
+func (s *SQLiteStore) GetRecentChecks(ctx context.Context, endpointID int64, since time.Time) ([]Check, error) {
+	// SQLite compares DATETIMEs as strings — normalize to UTC so offsets never mix.
+	since = since.UTC()
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT checked_at, up, status_code, latency_ms FROM checks
+		 WHERE endpoint_id = ? AND checked_at >= ?
+		 ORDER BY checked_at, id`,
+		endpointID, since,
+	)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	defer rows.Close()
+
+	var checks []Check
+	for rows.Next() {
+		var c Check
+		if err := rows.Scan(&c.CheckedAt, &c.Up, &c.StatusCode, &c.LatencyMs); err != nil {
+			return nil, apperror.Wrap(apperror.ErrDatabase, err)
+		}
+		checks = append(checks, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	return checks, nil
+}
+
+// GetDailyStats aggregates the check history into per-day buckets (UTC),
+// oldest first. Days without checks are absent. The date comes from
+// substr(checked_at, 1, 10) because SQLite's date() cannot parse the
+// modernc " +0000 UTC" timestamp format.
+func (s *SQLiteStore) GetDailyStats(ctx context.Context, endpointID int64, since time.Time) ([]DayStat, error) {
+	// SQLite compares DATETIMEs as strings — normalize to UTC so offsets never mix.
+	since = since.UTC()
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT substr(checked_at, 1, 10) AS day, COUNT(*), COALESCE(SUM(up), 0), AVG(latency_ms)
+		 FROM checks WHERE endpoint_id = ? AND checked_at >= ?
+		 GROUP BY day ORDER BY day`,
+		endpointID, since,
+	)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	defer rows.Close()
+
+	var days []DayStat
+	for rows.Next() {
+		var d DayStat
+		var avg sql.NullFloat64
+		if err := rows.Scan(&d.Date, &d.Total, &d.Up, &avg); err != nil {
+			return nil, apperror.Wrap(apperror.ErrDatabase, err)
+		}
+		d.AvgLatencyMs = avg.Float64
+		days = append(days, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, apperror.Wrap(apperror.ErrDatabase, err)
+	}
+	return days, nil
+}
+
 // PruneChecks deletes check history older than the given time.
 // Returns the number of deleted rows.
 func (s *SQLiteStore) PruneChecks(ctx context.Context, olderThan time.Time) (int64, error) {
@@ -571,7 +635,6 @@ func (s *SQLiteStore) PruneChecks(ctx context.Context, olderThan time.Time) (int
 	}
 	return n, nil
 }
-
 
 // AddMaintenanceWindow creates a recurring maintenance window.
 // endpointID NULL means the window applies to all endpoints.

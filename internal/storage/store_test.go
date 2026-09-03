@@ -693,6 +693,96 @@ func TestCheckStatsAndPrune(t *testing.T) {
 	}
 }
 
+func TestGetRecentChecks(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+
+	for i := 1; i <= 5; i++ {
+		up := i != 3
+		if err := store.RecordCheck(ctx, ep.ID, up, 200, int64(i*10)); err != nil {
+			t.Fatalf("RecordCheck: %v", err)
+		}
+	}
+
+	checks, err := store.GetRecentChecks(ctx, ep.ID, time.Now().Add(-time.Hour)) // non-UTC on purpose: store must normalize
+	if err != nil {
+		t.Fatalf("GetRecentChecks: %v", err)
+	}
+	if len(checks) != 5 {
+		t.Fatalf("checks = %d, want 5", len(checks))
+	}
+	// Oldest first, fields carried through.
+	if checks[0].LatencyMs != 10 || checks[4].LatencyMs != 50 {
+		t.Errorf("unexpected latency order: %d..%d", checks[0].LatencyMs, checks[4].LatencyMs)
+	}
+	if checks[2].Up {
+		t.Errorf("check 3 should be down: %+v", checks[2])
+	}
+
+	// Window excluding all checks.
+	checks, err = store.GetRecentChecks(ctx, ep.ID, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("GetRecentChecks empty: %v", err)
+	}
+	if len(checks) != 0 {
+		t.Errorf("checks = %d, want 0", len(checks))
+	}
+}
+
+func TestGetDailyStats(t *testing.T) {
+	db := testDB(t)
+	store := NewSQLiteStore(db)
+	ctx := context.Background()
+
+	ep, _ := store.AddEndpoint(ctx, "prod-api", "https://example.com", 30)
+
+	// Three days of history: yesterday 3/4 up, today 2/2 up, plus one old row
+	// outside the query window. Timestamps use the modernc storage format.
+	now := time.Now().UTC()
+	insert := func(daysAgo int, hour int, up int, latency int64) {
+		at := now.AddDate(0, 0, -daysAgo).Truncate(24 * time.Hour).Add(time.Duration(hour) * time.Hour)
+		_, err := db.ExecContext(ctx,
+			"INSERT INTO checks (endpoint_id, up, status_code, latency_ms, checked_at) VALUES (?, ?, 200, ?, ?)",
+			ep.ID, up, latency, at.Format("2006-01-02 15:04:05.000000 +0000 UTC"),
+		)
+		if err != nil {
+			t.Fatalf("insert check: %v", err)
+		}
+	}
+	insert(1, 1, 1, 100)
+	insert(1, 2, 1, 200)
+	insert(1, 3, 1, 300)
+	insert(1, 4, 0, 400)
+	insert(0, 1, 1, 50)
+	insert(0, 2, 1, 70)
+	insert(31, 1, 1, 999) // outside a 30-day window
+
+	days, err := store.GetDailyStats(ctx, ep.ID, now.AddDate(0, 0, -30))
+	if err != nil {
+		t.Fatalf("GetDailyStats: %v", err)
+	}
+	if len(days) != 2 {
+		t.Fatalf("days = %d, want 2 (old row must be excluded)", len(days))
+	}
+	// Oldest first: yesterday, then today.
+	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
+	if days[0].Date != yesterday || days[0].Total != 4 || days[0].Up != 3 {
+		t.Errorf("unexpected day 0: %+v", days[0])
+	}
+	if days[0].Uptime() != 75 {
+		t.Errorf("day 0 uptime = %.1f, want 75", days[0].Uptime())
+	}
+	if days[0].AvgLatencyMs != 250 {
+		t.Errorf("day 0 avg latency = %.1f, want 250", days[0].AvgLatencyMs)
+	}
+	if days[1].Total != 2 || days[1].Up != 2 {
+		t.Errorf("unexpected day 1: %+v", days[1])
+	}
+}
+
 func TestOpenDBConcurrentWrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "concurrent.db")
 	db, err := OpenDB(path)

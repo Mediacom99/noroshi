@@ -15,6 +15,9 @@ services:
       - SLOW_THRESHOLD_MS=${SLOW_THRESHOLD_MS:-0}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - HEALTH_PORT=${HEALTH_PORT:-8080}
+      # Web dashboard API (optional; /api/ on HEALTH_PORT, Bearer auth)
+      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN:-}
+      - DASHBOARD_ORIGIN=${DASHBOARD_ORIGIN:-}
     ports:
       - "${HEALTH_PORT:-8080}:${HEALTH_PORT:-8080}"
     volumes:

@@ -64,6 +64,30 @@ type CheckTransition struct {
 	StatusCode int
 }
 
+// Check is a single recorded health-check result.
+type Check struct {
+	CheckedAt  time.Time
+	Up         bool
+	StatusCode int
+	LatencyMs  int64
+}
+
+// DayStat aggregates one UTC day of check history.
+type DayStat struct {
+	Date         string // YYYY-MM-DD (UTC)
+	Total        int
+	Up           int
+	AvgLatencyMs float64
+}
+
+// Uptime returns the percentage of successful checks that day.
+func (d DayStat) Uptime() float64 {
+	if d.Total == 0 {
+		return 100
+	}
+	return float64(d.Up) / float64(d.Total) * 100
+}
+
 // MaintenanceWindow is a recurring UTC time window during which scheduled
 // checks are skipped. EndpointID NULL means the window applies to every
 // endpoint. StartMinutes/EndMinutes are minutes since midnight UTC; an

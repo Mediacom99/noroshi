@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"noroshi/internal/api"
 	"noroshi/internal/apperror"
 	"noroshi/internal/bot"
 	"noroshi/internal/config"
@@ -116,8 +117,13 @@ func main() {
 	// Start bot
 	teleBot.Start()
 
-	// Start health server
-	healthSrv := startHealthServer(cfg.HealthPort, store, metrics, log)
+	// Start health server (also hosts the dashboard API when DASHBOARD_TOKEN is set)
+	var apiHandler http.Handler
+	if cfg.DashboardToken != "" {
+		apiHandler = api.NewServer(store, scheduler, cfg.DashboardToken, cfg.DashboardOrigins, base.With("component", "api")).Handler()
+		log.Info("dashboard api enabled", "origins", cfg.DashboardOrigins)
+	}
+	healthSrv := startHealthServer(cfg.HealthPort, store, metrics, apiHandler, log)
 
 	// Wait for shutdown signal
 	<-ctx.Done()
@@ -137,13 +143,18 @@ func main() {
 	log.Info("shutdown complete")
 }
 
-func startHealthServer(port int, store *storage.SQLiteStore, metrics *monitor.Metrics, log *slog.Logger) *http.Server {
+func startHealthServer(port int, store *storage.SQLiteStore, metrics *monitor.Metrics, apiHandler http.Handler, log *slog.Logger) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	// Dashboard JSON API (only when DASHBOARD_TOKEN is configured).
+	if apiHandler != nil {
+		mux.Handle("/api/", apiHandler)
+	}
 
 	// Prometheus scrape endpoint (unauthenticated, like the badges).
 	if metrics != nil {
