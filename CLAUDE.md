@@ -76,6 +76,11 @@ These are the ONLY external dependencies. NEVER add others without explicit appr
 - **Deploying = merging `develop` into `main` and pushing.** Always do this when the user asks to deploy.
 - Releases: push a `vX.Y.Z` tag — the release workflow builds and pushes the multi-arch GHCR image.
 
+## Web Dashboard
+
+- `internal/api/` — JSON API mounted at `/api/` on `HEALTH_PORT`, only when `DASHBOARD_TOKEN` is set. Bearer auth (constant-time compare); CORS origins from `DASHBOARD_ORIGIN`. Management actions mirror bot semantics (CheckNow never notifies, interval/resume roll back on job failure). Validation reuses `bot.ValidateName`/`ValidateURL`/`ValidateKeywordSpec` — never duplicate the rules.
+- `web/` — static React frontend (Vite + TypeScript + Tailwind v4 + TanStack Query/Router), hosted separately. Build: `cd web && npm run build`. Dev: `npm run dev` (proxies `/api` to localhost:8080). API URL via `VITE_API_URL`.
+
 <!-- GSD:project-start source:PROJECT.md -->
 ## Project
 

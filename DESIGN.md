@@ -13,6 +13,11 @@ noroshi/
 │   ├── apperror/
 │   │   ├── apperror.go                  # AppError type, sentinels, Wrap helper
 │   │   └── apperror_test.go
+│   ├── api/
+│   │   ├── api.go                       # Dashboard JSON API: Server, auth + CORS middleware
+│   │   ├── handlers.go                  # /api/endpoints CRUD, pause/resume, check-now, incidents, checks
+│   │   ├── types.go                     # JSON DTOs, error mapping
+│   │   └── api_test.go                  # Handler tests with mock Store/Scheduler
 │   ├── config/
 │   │   ├── config.go                    # Config struct, Load() from env vars
 │   │   └── config_test.go
@@ -35,6 +40,7 @@ noroshi/
 │       ├── store.go                     # OpenDB, RunMigrations, SQLiteStore
 │       └── store_test.go
 ├── .github/workflows/                   # ci.yml (lint, build, vet, test), release.yml (GHCR)
+├── web/                                 # Optional React dashboard (Vite + TS + Tailwind + TanStack)
 ├── Dockerfile                           # Multi-stage, non-root, HEALTHCHECK on ${HEALTH_PORT:-8080}
 ├── docker-compose.yml
 ├── entrypoint.sh                        # Volume permission fix + privilege drop
@@ -239,6 +245,14 @@ All user-provided content is HTML-escaped; messages use `ParseMode: HTML`. The `
 `GET /badge/<name>.svg` → shields-style SVG status badge (up/down/paused/unknown colors), `Cache-Control: no-cache`. Public by design — meant for READMEs and dashboards.
 
 `GET /metrics` → Prometheus exposition from a dedicated registry (`internal/monitor/metrics.go`): `noroshi_checks_total{endpoint,up}`, `noroshi_check_latency_seconds{endpoint}` histogram, `noroshi_endpoint_up{endpoint}` gauge, `noroshi_endpoint_info{endpoint,url,type}` gauge. Recorded in `scheduler.recordCheck` (the choke point for scheduled and ad-hoc checks); `endpoint_info` is set on `Scheduler.Add` and series are deleted on `Scheduler.Remove` (name looked up before the bot deletes the row). The scheduler receives metrics via `SetMetrics` (nil disables) to keep the constructor stable. Public by design, like badges.
+
+## Dashboard API
+
+When `DASHBOARD_TOKEN` is set, `internal/api` is mounted at `/api/` on the health server: a JSON API (stdlib `net/http` mux, no framework) backing the optional React dashboard in `web/`. Every request requires `Authorization: Bearer <DASHBOARD_TOKEN>` (constant-time compare); when unset the API is not mounted at all. CORS allows only the origins listed in `DASHBOARD_ORIGIN` (comma-separated); preflights are answered by middleware before auth.
+
+Management actions mirror the bot's semantics exactly: ad-hoc checks go through `Scheduler.CheckNow` (no failure counters, no notifications), interval changes roll the DB back when re-adding the job fails, resume rolls the pause flag back on job failure, and a scheduler-add failure on create leaves the endpoint persisted for pickup after restart. Validation reuses the bot's exported `ValidateName`/`ValidateURL`/`ValidateKeywordSpec` — the same rules apply to both interfaces. The API's `Store`/`Scheduler` interfaces are defined at the point of use like the bot's.
+
+The frontend is a static Vite build (`web/`, React + TanStack Query/Router + Tailwind) hosted separately; it stores the token in localStorage and sends it as a Bearer header.
 
 ## Docker & Release
 

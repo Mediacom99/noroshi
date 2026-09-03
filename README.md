@@ -4,7 +4,7 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/Mediacom99/noroshi)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A self-contained uptime monitor in Go that uses a Telegram bot as its only interface. Add HTTP endpoints to monitor via chat commands, get alerted on failures and recoveries. Runs as a single Docker container with SQLite for persistence — no dashboard, no database server, nothing else to maintain.
+A self-contained uptime monitor in Go that uses a Telegram bot as its primary interface, with an optional React web dashboard. Add HTTP endpoints to monitor via chat commands or the dashboard, get alerted on failures and recoveries. Runs as a single Docker container with SQLite for persistence — no database server, nothing else to maintain.
 
 ## Features
 
@@ -21,6 +21,7 @@ A self-contained uptime monitor in Go that uses a Telegram bot as its only inter
 - **Uptime stats & incident history** — every check is recorded (30-day retention) and aggregated into `/uptime` and `/incidents`
 - **Uptime digest** — optional daily/weekly summary message (`DIGEST=daily`), plus on-demand via `/digest`
 - **Status badges** — embeddable SVG at `http://<host>:8080/badge/<name>.svg` for READMEs and dashboards
+- **Web dashboard (optional)** — static React SPA in `web/` backed by a token-protected JSON API: live status, uptime stats, latency charts, incident history, and endpoint management (add/pause/resume/delete)
 - **On-demand checks** — `/status` probes all endpoints immediately and reports HTTP code and latency
 - **SQLite persistence** — endpoints survive restarts; pure-Go driver, no CGO
 - **Single container** — multi-arch image (`linux/amd64`, `linux/arm64`) published to GHCR, `/healthz` endpoint for orchestrators
@@ -110,8 +111,38 @@ CGO_ENABLED=0 go build ./cmd/monitor/
 | `ALERT_WEBHOOK_TOKEN` | No | — | Sent as `Authorization: Bearer <token>` on webhook calls |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, `error` |
 | `HEALTH_PORT` | No | `8080` | Port for the `/healthz` HTTP endpoint |
+| `DASHBOARD_TOKEN` | No | — | Bearer token for the dashboard JSON API (`/api/` on `HEALTH_PORT`); unset = API disabled |
+| `DASHBOARD_ORIGIN` | No | — | Comma-separated allowed CORS origins for the dashboard frontend |
 
-The bot answers only in the configured chat — messages from any other chat are ignored. The `/badge/<name>.svg` and `/metrics` endpoints are intentionally public (read-only), so only expose `HEALTH_PORT` if that's acceptable.
+The bot answers only in the configured chat — messages from any other chat are ignored. The `/badge/<name>.svg` and `/metrics` endpoints are intentionally public (read-only), so only expose `HEALTH_PORT` if that's acceptable. The `/api/` dashboard API (when enabled) requires the `DASHBOARD_TOKEN` Bearer credential on every request.
+
+## Web dashboard
+
+An optional static React SPA lives in `web/` (Vite + TypeScript + Tailwind + TanStack Query/Router). It talks to the JSON API the binary serves under `/api/` on `HEALTH_PORT` when `DASHBOARD_TOKEN` is set — the same port as `/healthz`, `/badge` and `/metrics`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/endpoints` | List all endpoints with live status |
+| `POST` | `/api/endpoints` | Add an endpoint `{name, url, interval_seconds?}` |
+| `GET` | `/api/endpoints/{id}` | Detail + uptime stats (24h / 7d / 30d) |
+| `PATCH` | `/api/endpoints/{id}` | Update name, interval, expected status, keyword |
+| `DELETE` | `/api/endpoints/{id}` | Remove an endpoint |
+| `POST` | `/api/endpoints/{id}/pause` | Pause (`{"duration": "2h"}` for auto-resume) |
+| `POST` | `/api/endpoints/{id}/resume` | Resume a paused endpoint |
+| `POST` | `/api/endpoints/{id}/check` | Run an ad-hoc check now |
+| `GET` | `/api/endpoints/{id}/incidents` | Recent outages |
+| `GET` | `/api/endpoints/{id}/checks?window=24h` | Raw check history (`24h`, `7d`, `30d`) |
+
+All requests need `Authorization: Bearer <DASHBOARD_TOKEN>`. When the frontend is hosted on a different origin, list it in `DASHBOARD_ORIGIN` for CORS.
+
+```bash
+cd web
+npm install
+npm run dev        # dev server on :5173, /api proxied to localhost:8080
+npm run build      # static build in web/dist/ — host it anywhere
+```
+
+The build reads `VITE_API_URL` (see `web/.env.example`) to know where the API lives; in dev the Vite proxy handles it, so no CORS setup is needed locally.
 
 ### Alert webhook
 
@@ -163,12 +194,14 @@ golangci-lint run                       # lint (v2.11.4, config in .golangci.yml
 Project layout:
 
 ```
-cmd/monitor/        entrypoint: wiring, signal handling, /healthz server
+cmd/monitor/        entrypoint: wiring, signal handling, /healthz server (+ /api/ dashboard API)
 internal/config/    env-var configuration
 internal/apperror/  structured errors with sentinels
 internal/storage/   SQLite store + goose migrations
 internal/monitor/   HTTP checker (retryablehttp) + gocron scheduler
 internal/bot/       Telegram bot: handlers, callbacks, formatting, validation
+internal/api/       Dashboard JSON API: auth, CORS, endpoint CRUD/stats/incidents
+web/                Optional React dashboard (Vite + TypeScript + Tailwind + TanStack)
 ```
 
 Releasing: push a `vX.Y.Z` tag — the release workflow builds and pushes a multi-arch image to `ghcr.io/mediacom99/noroshi` with `latest` and semver tags.
