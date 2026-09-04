@@ -31,6 +31,9 @@ type mockStore struct {
 	getRecentTransitionsFn func(ctx context.Context, endpointID int64, limit int) ([]storage.CheckTransition, error)
 	getRecentChecksFn      func(ctx context.Context, endpointID int64, since time.Time) ([]storage.Check, error)
 	getDailyStatsFn        func(ctx context.Context, endpointID int64, since time.Time) ([]storage.DayStat, error)
+	addMaintenanceFn       func(ctx context.Context, endpointID sql.NullInt64, days string, startMinutes, endMinutes int) (storage.MaintenanceWindow, error)
+	listMaintenanceFn      func(ctx context.Context) ([]storage.MaintenanceWindow, error)
+	deleteMaintenanceFn    func(ctx context.Context, id int64) error
 }
 
 func (m *mockStore) AddEndpoint(ctx context.Context, name, url string, interval int) (storage.Endpoint, error) {
@@ -71,6 +74,15 @@ func (m *mockStore) GetRecentChecks(ctx context.Context, endpointID int64, since
 }
 func (m *mockStore) GetDailyStats(ctx context.Context, endpointID int64, since time.Time) ([]storage.DayStat, error) {
 	return m.getDailyStatsFn(ctx, endpointID, since)
+}
+func (m *mockStore) AddMaintenanceWindow(ctx context.Context, endpointID sql.NullInt64, days string, startMinutes, endMinutes int) (storage.MaintenanceWindow, error) {
+	return m.addMaintenanceFn(ctx, endpointID, days, startMinutes, endMinutes)
+}
+func (m *mockStore) ListMaintenanceWindows(ctx context.Context) ([]storage.MaintenanceWindow, error) {
+	return m.listMaintenanceFn(ctx)
+}
+func (m *mockStore) DeleteMaintenanceWindow(ctx context.Context, id int64) error {
+	return m.deleteMaintenanceFn(ctx, id)
 }
 
 // mockScheduler implements api.Scheduler with function-field delegation.
@@ -162,6 +174,18 @@ func defaultMockStore() *mockStore {
 		},
 		getDailyStatsFn: func(context.Context, int64, time.Time) ([]storage.DayStat, error) {
 			return []storage.DayStat{{Date: "2026-09-02", Total: 100, Up: 98, AvgLatencyMs: 55}}, nil
+		},
+		addMaintenanceFn: func(_ context.Context, endpointID sql.NullInt64, days string, startMinutes, endMinutes int) (storage.MaintenanceWindow, error) {
+			return storage.MaintenanceWindow{ID: 1, EndpointID: endpointID, Days: days, StartMinutes: startMinutes, EndMinutes: endMinutes}, nil
+		},
+		listMaintenanceFn: func(context.Context) ([]storage.MaintenanceWindow, error) {
+			return []storage.MaintenanceWindow{{ID: 1, Days: "sat,sun", StartMinutes: 120, EndMinutes: 240}}, nil
+		},
+		deleteMaintenanceFn: func(_ context.Context, id int64) error {
+			if id != 1 {
+				return apperror.Wrap(apperror.ErrNotFound, nil)
+			}
+			return nil
 		},
 	}
 }
@@ -450,5 +474,55 @@ func TestListDailyStats(t *testing.T) {
 	rec = do(t, srv, http.MethodGet, "/api/endpoints/1/daily?days=90", "")
 	if rec.Code != http.StatusOK {
 		t.Errorf("days=90 should clamp to retention, status = %d, want 200", rec.Code)
+	}
+}
+
+func TestMaintenanceWindows(t *testing.T) {
+	srv := newTestServer(defaultMockStore(), &mockScheduler{})
+
+	// List.
+	rec := do(t, srv, http.MethodGet, "/api/maintenance", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: status = %d, want 200", rec.Code)
+	}
+	windows := decodeBody(t, rec)["maintenance"].([]any)
+	if len(windows) != 1 {
+		t.Fatalf("maintenance = %d, want 1", len(windows))
+	}
+	mw := windows[0].(map[string]any)
+	if mw["days"] != "sat,sun" || mw["start_minutes"].(float64) != 120 {
+		t.Errorf("unexpected window: %v", mw)
+	}
+	if _, ok := mw["active"].(bool); !ok {
+		t.Errorf("window should carry an active flag: %v", mw)
+	}
+
+	// Add: valid (endpoint-scoped), global, and invalid inputs.
+	for _, tc := range []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{"endpoint scoped", `{"endpoint_id":1,"days":"mon,wed","start":"02:00","end":"04:00"}`, http.StatusCreated},
+		{"global", `{"days":"all","start":"22:00","end":"02:00"}`, http.StatusCreated},
+		{"unknown endpoint", `{"endpoint_id":99,"days":"all","start":"02:00","end":"04:00"}`, http.StatusNotFound},
+		{"bad days", `{"days":"monday","start":"02:00","end":"04:00"}`, http.StatusBadRequest},
+		{"bad time", `{"days":"all","start":"2am","end":"04:00"}`, http.StatusBadRequest},
+		{"equal start/end", `{"days":"all","start":"02:00","end":"02:00"}`, http.StatusBadRequest},
+	} {
+		rec := do(t, srv, http.MethodPost, "/api/maintenance", tc.body)
+		if rec.Code != tc.wantStatus {
+			t.Errorf("%s: status = %d, want %d (body: %s)", tc.name, rec.Code, tc.wantStatus, rec.Body.String())
+		}
+	}
+
+	// Delete: existing and missing.
+	rec = do(t, srv, http.MethodDelete, "/api/maintenance/1", "")
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("delete: status = %d, want 204", rec.Code)
+	}
+	rec = do(t, srv, http.MethodDelete, "/api/maintenance/99", "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("delete missing: status = %d, want 404", rec.Code)
 	}
 }

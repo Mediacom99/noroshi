@@ -29,6 +29,9 @@ type Store interface {
 	GetRecentTransitions(ctx context.Context, endpointID int64, limit int) ([]storage.CheckTransition, error)
 	GetRecentChecks(ctx context.Context, endpointID int64, since time.Time) ([]storage.Check, error)
 	GetDailyStats(ctx context.Context, endpointID int64, since time.Time) ([]storage.DayStat, error)
+	AddMaintenanceWindow(ctx context.Context, endpointID sql.NullInt64, days string, startMinutes, endMinutes int) (storage.MaintenanceWindow, error)
+	ListMaintenanceWindows(ctx context.Context) ([]storage.MaintenanceWindow, error)
+	DeleteMaintenanceWindow(ctx context.Context, id int64) error
 }
 
 // Scheduler defines the scheduling methods the dashboard API needs.
@@ -81,6 +84,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/endpoints/{id}/incidents", s.listIncidents)
 	s.mux.HandleFunc("GET /api/endpoints/{id}/checks", s.listChecks)
 	s.mux.HandleFunc("GET /api/endpoints/{id}/daily", s.listDailyStats)
+	s.mux.HandleFunc("GET /api/maintenance", s.listMaintenance)
+	s.mux.HandleFunc("POST /api/maintenance", s.addMaintenance)
+	s.mux.HandleFunc("DELETE /api/maintenance/{id}", s.deleteMaintenance)
 }
 
 // Handler returns the root handler with CORS and Bearer auth applied.

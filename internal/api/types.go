@@ -126,6 +126,32 @@ type checkJSON struct {
 	LatencyMs  int64     `json:"latency_ms"`
 }
 
+// maintenanceJSON is a recurring maintenance window as the dashboard sees it.
+// EndpointID null means the window applies to all endpoints.
+type maintenanceJSON struct {
+	ID           int64  `json:"id"`
+	EndpointID   *int64 `json:"endpoint_id"`
+	Days         string `json:"days"` // "all" or comma day codes: mon,tue,...
+	StartMinutes int    `json:"start_minutes"`
+	EndMinutes   int    `json:"end_minutes"`
+	Active       bool   `json:"active"` // window is in effect right now (UTC)
+}
+
+func toMaintenanceJSON(w storage.MaintenanceWindow, now time.Time) maintenanceJSON {
+	var epID *int64
+	if w.EndpointID.Valid {
+		epID = &w.EndpointID.Int64
+	}
+	return maintenanceJSON{
+		ID:           w.ID,
+		EndpointID:   epID,
+		Days:         w.Days,
+		StartMinutes: w.StartMinutes,
+		EndMinutes:   w.EndMinutes,
+		Active:       w.Applies(now),
+	}
+}
+
 // dayJSON aggregates one UTC day of check history.
 type dayJSON struct {
 	Date         string  `json:"date"` // YYYY-MM-DD (UTC)

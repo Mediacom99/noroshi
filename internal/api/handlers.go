@@ -390,6 +390,79 @@ func (s *Server) listDailyStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"days": out})
 }
 
+func (s *Server) listMaintenance(w http.ResponseWriter, r *http.Request) {
+	windows, err := s.store.ListMaintenanceWindows(r.Context())
+	if err != nil {
+		s.logger.Error("list maintenance windows", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	now := time.Now().UTC()
+	out := make([]maintenanceJSON, 0, len(windows))
+	for _, mw := range windows {
+		out = append(out, toMaintenanceJSON(mw, now))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"maintenance": out})
+}
+
+type addMaintenanceRequest struct {
+	EndpointID *int64 `json:"endpoint_id"` // null/absent = all endpoints
+	Days       string `json:"days"`        // "all" or comma day codes: mon,tue,...
+	Start      string `json:"start"`       // "HH:MM" (UTC)
+	End        string `json:"end"`         // "HH:MM" (UTC); earlier than start = overnight
+}
+
+func (s *Server) addMaintenance(w http.ResponseWriter, r *http.Request) {
+	var req addMaintenanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	days, err := bot.ParseMaintDays(req.Days)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	start, end, err := bot.ParseMaintTimeRange(req.Start + "-" + req.End)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var endpointID sql.NullInt64
+	if req.EndpointID != nil {
+		// The endpoint must exist; windows are removed on endpoint delete.
+		if _, err := s.store.GetEndpoint(r.Context(), *req.EndpointID); err != nil {
+			s.writeStoreError(w, err, "get endpoint", *req.EndpointID)
+			return
+		}
+		endpointID = sql.NullInt64{Int64: *req.EndpointID, Valid: true}
+	}
+
+	mw, err := s.store.AddMaintenanceWindow(r.Context(), endpointID, days, start, end)
+	if err != nil {
+		s.writeStoreError(w, err, "add maintenance window", 0)
+		return
+	}
+	s.logger.Info("maintenance window added", "id", mw.ID, "days", days, "start", req.Start, "end", req.End)
+	writeJSON(w, http.StatusCreated, map[string]any{"maintenance": toMaintenanceJSON(mw, time.Now().UTC())})
+}
+
+func (s *Server) deleteMaintenance(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid maintenance window id")
+		return
+	}
+	if err := s.store.DeleteMaintenanceWindow(r.Context(), id); err != nil {
+		s.writeStoreError(w, err, "delete maintenance window", id)
+		return
+	}
+	s.logger.Info("maintenance window deleted", "id", id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // parseWindow accepts Go durations ("24h") plus day shorthand ("7d", "30d"),
 // capped at the 30-day retention window.
 func parseWindow(v string) (time.Duration, error) {
