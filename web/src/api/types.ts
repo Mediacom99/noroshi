@@ -67,6 +67,57 @@ export interface UpdateEndpointInput {
   expected_keyword?: string
 }
 
+export interface MaintenanceWindow {
+  id: number
+  endpoint_id: number | null // null = applies to ALL endpoints
+  days: string // "all" or comma-separated day codes: "mon,wed,fri"
+  start_minutes: number // minutes since midnight UTC
+  end_minutes: number // end < start = overnight window
+  active: boolean // window is in effect right now (UTC)
+}
+
+export interface CreateMaintenanceInput {
+  endpoint_id?: number | null
+  days: string
+  start: string // "HH:MM" UTC
+  end: string // "HH:MM" UTC
+}
+
+export function useMaintenanceWindows() {
+  return useQuery({
+    queryKey: ['maintenance'],
+    queryFn: () =>
+      api<{ maintenance: MaintenanceWindow[] }>('/api/maintenance').then((r) => r.maintenance),
+    refetchInterval: 60000,
+  })
+}
+
+export function useAddMaintenanceWindow() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreateMaintenanceInput) =>
+      api<{ maintenance: MaintenanceWindow }>('/api/maintenance', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }).then((r) => r.maintenance),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['maintenance'] })
+      void queryClient.invalidateQueries({ queryKey: ['endpoints'] })
+    },
+  })
+}
+
+export function useDeleteMaintenanceWindow() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api<void>(`/api/maintenance/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['maintenance'] })
+      void queryClient.invalidateQueries({ queryKey: ['endpoints'] })
+    },
+  })
+}
+
 export function useEndpoints() {
   return useQuery({
     queryKey: ['endpoints'],

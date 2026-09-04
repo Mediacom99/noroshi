@@ -1,23 +1,28 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createRoute, Link, useNavigate } from '@tanstack/react-router'
 import { rootRoute } from './root'
 import { clearToken } from '../api/client'
-import { useChecks24h, useDailyStatsAll, useEndpoints } from '../api/types'
+import { useChecks24h, useDailyStatsAll, useEndpoints, useMaintenanceWindows } from '../api/types'
 import type { Check, Endpoint } from '../api/types'
 import { Header } from '../components/Header'
 import { StatusDot } from '../components/StatusDot'
 import { TypeChip } from '../components/TypeChip'
 import { UptimeBar } from '../components/UptimeBar'
+import { MaintenanceChip } from '../components/MaintenanceChip'
 import { AddEndpointForm } from '../components/AddEndpointForm'
 import { formatLatency, formatUptime, relativeTime } from '../lib/format'
 import { statusKind, statusTokens, uptimeTextColor } from '../lib/status'
 import type { StatusKind } from '../lib/status'
 import { overallUptime } from '../lib/stats'
+import { isEndpointInMaintenance } from '../lib/maintenance'
 import type { DayStat } from '../api/types'
 
 export const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
+  validateSearch: (search: Record<string, unknown>): { clone?: string } => ({
+    clone: typeof search.clone === 'string' ? search.clone : undefined,
+  }),
   component: DashboardPage,
 })
 
@@ -28,12 +33,33 @@ const SORT_ORDER: Record<StatusKind, number> = { down: 0, unknown: 1, up: 2, pau
 
 function DashboardPage() {
   const navigate = useNavigate()
+  const { clone } = indexRoute.useSearch()
   const { data: endpoints, isLoading, isError, error, dataUpdatedAt } = useEndpoints()
   const checksResults = useChecks24h(endpoints)
   const dailyResults = useDailyStatsAll(endpoints)
+  const maintenanceQuery = useMaintenanceWindows()
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
   const [showAddForm, setShowAddForm] = useState(false)
+  const [formPrefill, setFormPrefill] = useState<
+    { name: string; url: string; interval: string } | undefined
+  >(undefined)
+
+  // Clone flow: /?clone=<id> opens the add form prefilled from that endpoint,
+  // then strips the param so a refresh doesn't reopen it.
+  useEffect(() => {
+    if (!clone || !endpoints) return
+    const source = endpoints.find((e) => e.id === Number(clone))
+    if (source) {
+      setFormPrefill({
+        name: `${source.name}-copy`,
+        url: source.url,
+        interval: String(source.interval_seconds),
+      })
+    }
+    setShowAddForm(true)
+    void navigate({ to: '/', search: {}, replace: true })
+  }, [clone, endpoints, navigate])
 
   function logout() {
     clearToken()
@@ -147,6 +173,7 @@ function DashboardPage() {
                   endpoint={endpoint}
                   checks={checks}
                   days={days}
+                  inMaintenance={isEndpointInMaintenance(maintenanceQuery.data, endpoint.id)}
                 />
               ))}
             </div>
@@ -155,7 +182,14 @@ function DashboardPage() {
 
         <div className="mt-6">
           {showAddForm ? (
-            <AddEndpointForm onDone={() => setShowAddForm(false)} />
+            <AddEndpointForm
+              key={formPrefill ? `${formPrefill.name}-${formPrefill.url}` : 'blank'}
+              initial={formPrefill}
+              onDone={() => {
+                setShowAddForm(false)
+                setFormPrefill(undefined)
+              }}
+            />
           ) : (
             <button onClick={() => setShowAddForm(true)} className="btn btn-secondary">
               Add endpoint
@@ -239,10 +273,12 @@ function EndpointRow({
   endpoint,
   checks,
   days,
+  inMaintenance,
 }: {
   endpoint: Endpoint
   checks: Check[] | undefined
   days: DayStat[] | undefined
+  inMaintenance: boolean
 }) {
   const uptime30d = overallUptime(days)
 
@@ -260,6 +296,7 @@ function EndpointRow({
               {endpoint.name}
             </span>
             <TypeChip type={endpoint.type} />
+            {inMaintenance && <MaintenanceChip />}
           </div>
           <p className="mt-0.5 truncate font-mono text-xs text-zinc-500">{endpoint.url}</p>
         </div>

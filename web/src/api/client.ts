@@ -4,6 +4,11 @@ const TOKEN_KEY = 'noroshi_token'
 // for /api this needs no CORS during local development.
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:8080'
 
+// Origin the API is served from; used to build absolute URLs for badge assets.
+export function apiOrigin(): string {
+  return BASE_URL === '' ? window.location.origin : BASE_URL
+}
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
 }

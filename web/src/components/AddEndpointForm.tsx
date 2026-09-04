@@ -4,12 +4,13 @@ import { useCreateEndpoint } from '../api/types'
 
 interface AddEndpointFormProps {
   onDone: () => void
+  initial?: { name: string; url: string; interval: string }
 }
 
-export function AddEndpointForm({ onDone }: AddEndpointFormProps) {
-  const [name, setName] = useState('')
-  const [url, setUrl] = useState('')
-  const [interval, setInterval_] = useState('60')
+export function AddEndpointForm({ onDone, initial }: AddEndpointFormProps) {
+  const [name, setName] = useState(initial?.name ?? '')
+  const [url, setUrl] = useState(initial?.url ?? '')
+  const [interval, setInterval_] = useState(initial?.interval ?? '60')
   const createEndpoint = useCreateEndpoint()
 
   const intervalSeconds = Number(interval)

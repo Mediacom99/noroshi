@@ -6,9 +6,15 @@ import { rootRoute } from './routes/root'
 import { loginRoute } from './routes/login'
 import { indexRoute } from './routes'
 import { endpointDetailRoute } from './routes/endpoints.$id'
+import { maintenanceRoute } from './routes/maintenance'
 import './index.css'
 
-const routeTree = rootRoute.addChildren([loginRoute, indexRoute, endpointDetailRoute])
+const routeTree = rootRoute.addChildren([
+  loginRoute,
+  indexRoute,
+  endpointDetailRoute,
+  maintenanceRoute,
+])
 
 const router = createRouter({ routeTree })
 
