@@ -194,6 +194,15 @@ The web dashboard (`web/`) deploys as a second Coolify resource from the same re
    - *Monitor public*: if you gave the monitor a domain anyway, `API_BACKEND=https://<monitor-domain>` works too.
 5. **Deploy.** Open the dashboard domain and log in with the `DASHBOARD_TOKEN` from step 1. No CORS setup is needed — the browser only ever talks to the dashboard's own origin.
 
+### Dashboard on Cloudflare Pages
+
+Alternative: host the frontend on Cloudflare Pages and expose only the API publicly.
+
+1. **Monitor resource**: give it a public domain (e.g. `api.noroshi.example.com`) and set `DASHBOARD_TOKEN` (a long random string) plus `DASHBOARD_ORIGIN=https://<pages-domain>` (comma-separated if several). The API requires the Bearer token on every request; CORS is restricted to the listed origins.
+2. **Cloudflare Pages**: create a project from the repo with root directory `web/`, build command `npm run build`, output directory `dist`, and env vars `VITE_API_URL=https://api.noroshi.example.com` and `NODE_VERSION=22`. The SPA fallback for client-side routes ships in `web/public/_redirects`.
+3. Optionally attach a custom domain to the Pages project and add that origin to `DASHBOARD_ORIGIN`.
+4. Log in with the `DASHBOARD_TOKEN`.
+
 ## Development
 
 ```bash
