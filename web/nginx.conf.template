@@ -4,11 +4,18 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # Dashboard JSON API → noroshi monitor. API_BACKEND is substituted at
-    # container start (nginx entrypoint envsubst) — compose service name
-    # locally, the monitor's public https URL on Coolify.
+    # Docker's embedded DNS, re-resolved per request: the monitor container
+    # gets a fresh IP on every redeploy, so the upstream must not be pinned
+    # at nginx startup. proxy_pass with a variable is what forces runtime
+    # resolution (and requires the full URI to be spelled out).
+    resolver 127.0.0.11 valid=5s ipv6=off;
+    set $api_backend ${API_BACKEND};
+
+    # Dashboard JSON API → noroshi monitor (compose service name locally,
+    # container name on Coolify's internal network, or a public https URL).
     location /api/ {
-        proxy_pass ${API_BACKEND};
+        proxy_pass $api_backend$request_uri;
+        proxy_ssl_server_name on;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -16,7 +23,8 @@ server {
 
     # Status badges → noroshi monitor
     location /badge/ {
-        proxy_pass ${API_BACKEND};
+        proxy_pass $api_backend$request_uri;
+        proxy_ssl_server_name on;
         proxy_set_header Host $host;
     }
 

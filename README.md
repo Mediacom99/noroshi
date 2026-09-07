@@ -184,13 +184,15 @@ Telegram requires HTTPS with a trusted certificate, so run the bot behind a TLS-
 
 ### Dashboard on Coolify
 
-The web dashboard (`web/`) deploys as a second Coolify resource:
+The web dashboard (`web/`) deploys as a second Coolify resource from the same repo. The dashboard's nginx serves the SPA **and** reverse-proxies `/api/` and `/badge/` to the monitor, so one domain covers both: `https://<dashboard-domain>/api/...` *is* the API. The monitor itself does not need a public domain.
 
-1. **Enable the API on the monitor resource**: add `DASHBOARD_TOKEN` (a long random string) to its environment variables and redeploy. Assign the monitor a domain if it doesn't have one (e.g. `noroshi.example.com`) — the dashboard's reverse proxy needs to reach it over HTTPS.
-2. **Create a new resource** from the same repository, Dockerfile build pack, with **Base Directory `/web`** and port `80`.
-3. **Set its domain** (e.g. `status.example.com`) and point a DNS A record for it at your Coolify server.
-4. **Set `API_BACKEND`** in the web resource's environment to the monitor's public URL (e.g. `https://noroshi.example.com`). The nginx container substitutes it at startup and proxies `/api/` and `/badge/` there — the browser only ever talks to the dashboard's own origin, so no CORS setup is needed.
-5. **Deploy.** Log in with the `DASHBOARD_TOKEN` from step 1.
+1. **Enable the API on the monitor resource**: add `DASHBOARD_TOKEN` (a long random string) to its environment variables and redeploy. No domain needed — it can stay fully internal.
+2. **DNS**: one A record for the dashboard domain (e.g. `noroshi.example.com`) pointing at your Coolify server.
+3. **Create a new resource** from the same repository, Dockerfile build pack, with **Base Directory `/web`**, port `80`, and the dashboard domain.
+4. **Set `API_BACKEND`** in the web resource's environment:
+   - *Monitor internal (recommended)*: enable **Connect to Predefined Network** on the web resource and set `API_BACKEND=http://<monitor-container-name>:8080` (Coolify names containers after the resource UUID — find it in the UI or via `docker ps` on the server; the name is stable across redeploys). The proxy re-resolves the name via Docker's embedded DNS, so monitor redeploys don't break it.
+   - *Monitor public*: if you gave the monitor a domain anyway, `API_BACKEND=https://<monitor-domain>` works too.
+5. **Deploy.** Open the dashboard domain and log in with the `DASHBOARD_TOKEN` from step 1. No CORS setup is needed — the browser only ever talks to the dashboard's own origin.
 
 ## Development
 
