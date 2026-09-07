@@ -1,0 +1,37 @@
+# Production stack for Coolify: monitor + web dashboard as ONE compose
+# deployment. Inside the stack the monitor is reachable at the stable
+# service name "monitor", so API_BACKEND never breaks across redeploys.
+#
+# Coolify: new resource → Docker Compose build pack → this file.
+# Attach the dashboard domain to the "web" service; the monitor stays
+# internal (no domain, no published ports). Set TELEGRAM_TOKEN,
+# TELEGRAM_CHAT_ID and DASHBOARD_TOKEN in the Coolify environment UI.
+services:
+  monitor:
+    build: .
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - DATABASE_PATH=/app/data/uptime.db
+      - HTTP_TIMEOUT=${HTTP_TIMEOUT:-10s}
+      - MAX_FAILURE_NOTIFICATIONS=${MAX_FAILURE_NOTIFICATIONS:-3}
+      - FAILURE_THRESHOLD=${FAILURE_THRESHOLD:-1}
+      - REMINDER_INTERVAL=${REMINDER_INTERVAL:-0}
+      - SLOW_THRESHOLD_MS=${SLOW_THRESHOLD_MS:-0}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - HEALTH_PORT=8080
+      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN:?set DASHBOARD_TOKEN in the Coolify environment}
+    volumes:
+      - uptime-data:/app/data
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    environment:
+      - API_BACKEND=http://monitor:8080
+    depends_on:
+      - monitor
+
+volumes:
+  uptime-data:
