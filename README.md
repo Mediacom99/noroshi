@@ -179,8 +179,18 @@ Telegram requires HTTPS with a trusted certificate, so run the bot behind a TLS-
 4. **Add persistent storage** — Storage tab, volume with destination path `/app/data`.
 5. **Set environment variables**: `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` (required), plus any optional ones from the table above.
 6. **Health checks** work automatically — the Dockerfile `HEALTHCHECK` takes precedence over Coolify's UI settings.
-7. **Domain** is optional — by default the bot uses Telegram long polling (no inbound traffic). Only assign one if you want external access to `/healthz`, `/badge`, `/metrics`, or if you enable webhook mode (`TELEGRAM_WEBHOOK_URL`).
+7. **Domain** is optional — by default the bot uses Telegram long polling (no inbound traffic). Only assign one if you want external access to `/healthz`, `/badge`, `/metrics`, the dashboard API (`/api/`), or if you enable webhook mode (`TELEGRAM_WEBHOOK_URL`).
 8. **Deploy** — Coolify rebuilds on every push to the configured branch.
+
+### Dashboard on Coolify
+
+The web dashboard (`web/`) deploys as a second Coolify resource:
+
+1. **Enable the API on the monitor resource**: add `DASHBOARD_TOKEN` (a long random string) to its environment variables and redeploy. Assign the monitor a domain if it doesn't have one (e.g. `noroshi.example.com`) — the dashboard's reverse proxy needs to reach it over HTTPS.
+2. **Create a new resource** from the same repository, Dockerfile build pack, with **Base Directory `/web`** and port `80`.
+3. **Set its domain** (e.g. `status.example.com`) and point a DNS A record for it at your Coolify server.
+4. **Set `API_BACKEND`** in the web resource's environment to the monitor's public URL (e.g. `https://noroshi.example.com`). The nginx container substitutes it at startup and proxies `/api/` and `/badge/` there — the browser only ever talks to the dashboard's own origin, so no CORS setup is needed.
+5. **Deploy.** Log in with the `DASHBOARD_TOKEN` from step 1.
 
 ## Development
 

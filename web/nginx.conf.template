@@ -4,17 +4,19 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # Dashboard JSON API → noroshi monitor container
+    # Dashboard JSON API → noroshi monitor. API_BACKEND is substituted at
+    # container start (nginx entrypoint envsubst) — compose service name
+    # locally, the monitor's public https URL on Coolify.
     location /api/ {
-        proxy_pass http://monitor:8080;
+        proxy_pass ${API_BACKEND};
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 
-    # Status badges → noroshi monitor container
+    # Status badges → noroshi monitor
     location /badge/ {
-        proxy_pass http://monitor:8080;
+        proxy_pass ${API_BACKEND};
         proxy_set_header Host $host;
     }
 
