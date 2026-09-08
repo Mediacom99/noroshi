@@ -52,7 +52,7 @@ export interface DayStat {
   avg_latency_ms: number
 }
 
-export type StatsWindow = '24h' | '7d' | '30d'
+export type StatsWindow = '1h' | '24h' | '7d' | '30d'
 
 export interface CreateEndpointInput {
   name: string
@@ -132,7 +132,9 @@ export function useEndpoint(id: number) {
   return useQuery({
     queryKey: ['endpoints', id],
     queryFn: () =>
-      api<{ endpoint: Endpoint; stats: Record<StatsWindow, Stats> }>(`/api/endpoints/${id}`),
+      api<{ endpoint: Endpoint; stats: Partial<Record<StatsWindow, Stats>> }>(
+        `/api/endpoints/${id}`,
+      ),
   })
 }
 

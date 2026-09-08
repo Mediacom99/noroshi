@@ -10,6 +10,7 @@ interface LatencyChartProps {
 }
 
 const WINDOW_MS: Record<StatsWindow, number> = {
+  '1h': 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,
   '7d': 7 * 24 * 60 * 60 * 1000,
   '30d': 30 * 24 * 60 * 60 * 1000,
@@ -76,7 +77,7 @@ export function LatencyChart({ checks, window }: LatencyChartProps) {
   const axisEnd = Date.now()
   const axisStart = axisEnd - WINDOW_MS[window]
   const axisLabels = [0, 1, 2, 3, 4].map((i) => new Date(axisStart + (WINDOW_MS[window] * i) / 4))
-  const formatAxis = (d: Date) => (window === '24h' ? shortTime(d) : shortDate(d))
+  const formatAxis = (d: Date) => (window === '1h' || window === '24h' ? shortTime(d) : shortDate(d))
 
   const hoverCheck = hover !== null ? sorted[hover] : null
 
@@ -96,7 +97,9 @@ export function LatencyChart({ checks, window }: LatencyChartProps) {
             className="absolute inset-x-0 border-t border-zinc-800/60"
             style={{ top: `${yPct(maxLatency * f)}%` }}
           >
-            <span className="absolute -top-1.5 right-2 -translate-y-full text-[10px] tabular-nums text-zinc-600">
+            {/* Grid values on the left so they never collide with the
+                avg/p95 reference labels on the right. */}
+            <span className="absolute -top-1.5 left-2 -translate-y-full text-[10px] tabular-nums text-zinc-600">
               {formatLatency(maxLatency * f)}
             </span>
           </div>
@@ -142,6 +145,15 @@ export function LatencyChart({ checks, window }: LatencyChartProps) {
             />
           )}
         </svg>
+
+        {n === 1 && (
+          <div
+            className={`absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ${
+              sorted[0].up ? 'bg-emerald-400' : 'bg-rose-500'
+            }`}
+            style={{ left: '50%', top: `${yPct(sorted[0].latency_ms)}%` }}
+          />
+        )}
 
         {sorted.map(
           (check, i) =>

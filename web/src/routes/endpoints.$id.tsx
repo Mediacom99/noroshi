@@ -11,10 +11,9 @@ import {
   useCheckNow,
   usePauseEndpoint,
   useResumeEndpoint,
-  useUpdateEndpoint,
   useDeleteEndpoint,
 } from '../api/types'
-import type { Endpoint, StatsWindow, UpdateEndpointInput } from '../api/types'
+import type { StatsWindow } from '../api/types'
 import { apiOrigin } from '../api/client'
 import { Header } from '../components/Header'
 import { StatusDot } from '../components/StatusDot'
@@ -28,7 +27,8 @@ import { SegmentedControl } from '../components/SegmentedControl'
 import { LatencyChart } from '../components/LatencyChart'
 import { IncidentList } from '../components/IncidentList'
 import { ConfirmDialog } from '../components/ConfirmDialog'
-import { formatInterval, formatLatency, formatUptime, parseDuration, relativeTime } from '../lib/format'
+import { EditEndpointDialog } from '../components/EditEndpointDialog'
+import { formatInterval, formatLatency, formatUptime, relativeTime } from '../lib/format'
 import { statusKind, statusTokens } from '../lib/status'
 import { isEndpointInMaintenance } from '../lib/maintenance'
 
@@ -38,7 +38,8 @@ export const endpointDetailRoute = createRoute({
   component: EndpointDetailPage,
 })
 
-const WINDOWS: readonly StatsWindow[] = ['24h', '7d', '30d']
+const STAT_WINDOWS: readonly StatsWindow[] = ['24h', '7d', '30d']
+const CHART_WINDOWS: readonly StatsWindow[] = ['1h', '24h', '7d', '30d']
 const CERT_WARNING_DAYS = 14
 
 type Tab = 'overview' | 'incidents' | 'graphs' | 'config'
@@ -64,6 +65,7 @@ function EndpointDetailPage() {
   const [tab, setTab] = useState<Tab>('overview')
   const [showPauseForm, setShowPauseForm] = useState(false)
   const [pauseDuration, setPauseDuration] = useState('')
+  const [showEditDialog, setShowEditDialog] = useState(false)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [copied, setCopied] = useState<'url' | 'markdown' | null>(null)
 
@@ -155,22 +157,6 @@ function EndpointDetailPage() {
               <p className="mt-1 truncate font-mono text-sm text-zinc-500">{endpoint.url}</p>
               <p className="mt-2 text-sm">
                 <span className={`font-medium ${tokens.text}`}>{tokens.label}</span>
-                <span className="text-zinc-500">
-                  {' '}
-                  · last checked {relativeTime(endpoint.last_checked_at)} · every{' '}
-                  {formatInterval(endpoint.interval_seconds)}
-                </span>
-                {endpoint.last_checked_at && !endpoint.paused && (
-                  <span className="tabular-nums text-zinc-500">
-                    {' '}
-                    · {formatLatency(endpoint.last_latency_ms)}
-                    {endpoint.last_status_code > 0 ? ` · HTTP ${endpoint.last_status_code}` : ''}
-                  </span>
-                )}
-                <span className="text-zinc-500">
-                  {' '}
-                  · created {new Date(endpoint.created_at).toLocaleDateString()}
-                </span>
                 {endpoint.paused && endpoint.paused_until && (
                   <span className="text-zinc-500">
                     {' '}
@@ -178,6 +164,20 @@ function EndpointDetailPage() {
                   </span>
                 )}
               </p>
+              <div className="mt-3 flex flex-wrap gap-x-8 gap-y-2">
+                <Fact label="Last checked" value={relativeTime(endpoint.last_checked_at)} />
+                <Fact label="Interval" value={formatInterval(endpoint.interval_seconds)} />
+                {endpoint.last_checked_at && !endpoint.paused && (
+                  <Fact label="Latency" value={formatLatency(endpoint.last_latency_ms)} />
+                )}
+                {endpoint.last_status_code > 0 && (
+                  <Fact label="Status" value={`HTTP ${endpoint.last_status_code}`} />
+                )}
+                <Fact
+                  label="Created"
+                  value={new Date(endpoint.created_at).toLocaleDateString()}
+                />
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -211,9 +211,15 @@ function EndpointDetailPage() {
           </div>
 
           <div className="mt-5">
+            {/* One segment per expected check (capped), so long-interval
+                endpoints don't show a mostly-empty bar. */}
             <UptimeBar
               checks={heroChecksQuery.data}
               paused={endpoint.paused}
+              segments={Math.max(
+                1,
+                Math.min(96, Math.round((24 * 3600) / endpoint.interval_seconds)),
+              )}
               barHeight="h-8"
             />
             <div className="mt-1.5 flex justify-between text-[11px] text-zinc-600">
@@ -336,7 +342,7 @@ function EndpointDetailPage() {
             </section>
 
             <section className="mt-8 grid gap-3 sm:grid-cols-3">
-              {WINDOWS.map((w) => (
+              {STAT_WINDOWS.map((w) => (
                 <StatCard key={w} label={w} stats={stats[w]} />
               ))}
             </section>
@@ -360,7 +366,7 @@ function EndpointDetailPage() {
             <div className="flex items-center justify-between">
               <h2 className="section-label">Latency</h2>
               <SegmentedControl
-                options={WINDOWS}
+                options={CHART_WINDOWS}
                 value={window_}
                 onChange={setWindow}
                 ariaLabel="Latency window"
@@ -384,21 +390,46 @@ function EndpointDetailPage() {
 
         {tab === 'config' && (
           <section className="mt-6">
-            <div className="card space-y-3 p-4 text-sm">
-              <RenameRow endpoint={endpoint} />
-              <IntervalRow endpoint={endpoint} />
-              <ExpectedStatusRow endpoint={endpoint} />
-              <ExpectedKeywordRow endpoint={endpoint} />
-              {endpoint.last_check_error && endpoint.status === 'not_ok' && (
-                <p>
-                  <span className="text-zinc-500">Last error </span>
-                  <span className="text-rose-400">{endpoint.last_check_error}</span>
-                </p>
-              )}
+            <div className="card p-4 text-sm">
+              <div className="flex items-center justify-between">
+                <p className="section-label">Settings</p>
+                <button
+                  onClick={() => setShowEditDialog(true)}
+                  className="btn btn-secondary px-2 py-0.5 text-xs"
+                >
+                  Edit
+                </button>
+              </div>
+              <dl className="mt-3 grid grid-cols-[130px_1fr] gap-x-4 gap-y-3">
+                <dt className="text-zinc-500">Name</dt>
+                <dd className="text-zinc-200">{endpoint.name}</dd>
+                <dt className="text-zinc-500">Interval</dt>
+                <dd className="tabular-nums text-zinc-200">
+                  {formatInterval(endpoint.interval_seconds)}
+                </dd>
+                <dt className="text-zinc-500">Expected status</dt>
+                <dd className="text-zinc-200">
+                  {endpoint.expected_status === 0 ? 'Any 2xx' : `HTTP ${endpoint.expected_status}`}
+                </dd>
+                <dt className="text-zinc-500">Expected keyword</dt>
+                <dd className={endpoint.expected_keyword ? 'font-mono text-zinc-200' : 'text-zinc-200'}>
+                  {endpoint.expected_keyword || '—'}
+                </dd>
+                {endpoint.last_check_error && endpoint.status === 'not_ok' && (
+                  <>
+                    <dt className="text-zinc-500">Last error</dt>
+                    <dd className="text-rose-400">{endpoint.last_check_error}</dd>
+                  </>
+                )}
+              </dl>
             </div>
           </section>
         )}
       </main>
+
+      {showEditDialog && (
+        <EditEndpointDialog endpoint={endpoint} onDone={() => setShowEditDialog(false)} />
+      )}
 
       <ConfirmDialog
         open={showDeleteDialog}
@@ -431,170 +462,12 @@ function certDaysRemaining(certExpiresAt: string | null): number | null {
   return Math.ceil((expires - Date.now()) / (24 * 60 * 60 * 1000))
 }
 
-// Generic inline-edit row for the Configuration tab: label + value + Edit
-// button, expanding into an input row with Save/Cancel, client-side
-// validation and inline API error display.
-function EditableRow({
-  endpoint,
-  label,
-  display,
-  initialValue,
-  placeholder,
-  hint,
-  mono = false,
-  validate,
-  buildPatch,
-}: {
-  endpoint: Endpoint
-  label: string
-  display: ReactNode
-  initialValue: string
-  placeholder?: string
-  hint?: string
-  mono?: boolean
-  validate?: (value: string) => string | null
-  buildPatch: (value: string) => UpdateEndpointInput
-}) {
-  const [editing, setEditing] = useState(false)
-  const [value, setValue] = useState('')
-  const update = useUpdateEndpoint(endpoint.id)
-  const validationError = validate ? validate(value) : null
-
-  function submit(e: FormEvent) {
-    e.preventDefault()
-    if (validationError !== null) return
-    update.mutate(buildPatch(value), { onSuccess: () => setEditing(false) })
-  }
-
-  if (!editing) {
-    return (
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-zinc-500">{label}</span>
-        <span className="text-zinc-200">{display}</span>
-        <button
-          onClick={() => {
-            setValue(initialValue)
-            setEditing(true)
-          }}
-          className="btn btn-secondary px-2 py-0.5 text-xs"
-        >
-          Edit
-        </button>
-      </div>
-    )
-  }
-
+// Small labeled value used in the hero card's facts row.
+function Fact({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <form onSubmit={submit}>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-zinc-500">{label}</span>
-        <input
-          type="text"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder={placeholder}
-          autoFocus
-          className={`input w-64 ${mono ? 'font-mono' : ''}`}
-        />
-        <button
-          type="submit"
-          disabled={update.isPending || validationError !== null}
-          className="btn btn-primary"
-        >
-          {update.isPending ? 'Saving…' : 'Save'}
-        </button>
-        <button type="button" onClick={() => setEditing(false)} className="btn btn-secondary">
-          Cancel
-        </button>
-        {update.isError && (
-          <span className="text-xs text-rose-400">{update.error.message}</span>
-        )}
-      </div>
-      {hint && <p className="mt-1.5 text-xs text-zinc-500">{hint}</p>}
-      {validationError && <p className="mt-1 text-xs text-rose-400">{validationError}</p>}
-    </form>
-  )
-}
-
-function RenameRow({ endpoint }: { endpoint: Endpoint }) {
-  return (
-    <EditableRow
-      endpoint={endpoint}
-      label="Name"
-      display={endpoint.name}
-      initialValue={endpoint.name}
-      validate={(v) => (v.trim() === '' ? 'Name is required' : null)}
-      buildPatch={(v) => ({ name: v.trim() })}
-    />
-  )
-}
-
-function IntervalRow({ endpoint }: { endpoint: Endpoint }) {
-  return (
-    <EditableRow
-      endpoint={endpoint}
-      label="Interval"
-      display={
-        <span className="tabular-nums">{formatInterval(endpoint.interval_seconds)}</span>
-      }
-      initialValue={formatInterval(endpoint.interval_seconds)}
-      placeholder="e.g. 30s, 5m, 1h30m, 1d, 1w"
-      hint="Smart durations: s, m, h, d (days), w (weeks) — a bare number means seconds. Minimum 10s."
-      mono
-      validate={(v) => {
-        if (v.trim() === '') return 'Interval is required'
-        const seconds = parseDuration(v)
-        if (seconds === null) return 'Invalid duration — use e.g. 30s, 5m, 1h30m, 1d, 1w'
-        if (seconds < 10) return 'Minimum interval is 10s'
-        return null
-      }}
-      buildPatch={(v) => ({ interval_seconds: parseDuration(v) ?? 0 })}
-    />
-  )
-}
-
-function parseExpectedStatus(value: string): number | null {
-  const t = value.trim().toLowerCase()
-  if (t === 'any') return 0
-  if (!/^\d+$/.test(t)) return null
-  const n = Number(t)
-  return n >= 100 && n <= 599 ? n : null
-}
-
-function ExpectedStatusRow({ endpoint }: { endpoint: Endpoint }) {
-  return (
-    <EditableRow
-      endpoint={endpoint}
-      label="Expected status"
-      display={endpoint.expected_status === 0 ? 'Any 2xx' : String(endpoint.expected_status)}
-      initialValue={endpoint.expected_status === 0 ? 'any' : String(endpoint.expected_status)}
-      placeholder="200 or any"
-      hint="A status code 100–599, or 'any' to accept any 2xx"
-      validate={(v) =>
-        parseExpectedStatus(v) === null ? "Enter a status code 100–599, or 'any'" : null
-      }
-      buildPatch={(v) => ({ expected_status: parseExpectedStatus(v) ?? 0 })}
-    />
-  )
-}
-
-function ExpectedKeywordRow({ endpoint }: { endpoint: Endpoint }) {
-  return (
-    <EditableRow
-      endpoint={endpoint}
-      label="Expected keyword"
-      display={
-        endpoint.expected_keyword ? (
-          <span className="font-mono">{endpoint.expected_keyword}</span>
-        ) : (
-          '—'
-        )
-      }
-      initialValue={endpoint.expected_keyword}
-      placeholder="e.g. ok, !error, re:up|down"
-      hint="text, !text, re:pattern, !re:pattern — empty clears"
-      mono
-      buildPatch={(v) => ({ expected_keyword: v.trim() })}
-    />
+    <div>
+      <p className="text-[10px] font-medium tracking-wider text-zinc-500 uppercase">{label}</p>
+      <p className="mt-0.5 text-sm tabular-nums text-zinc-300">{value}</p>
+    </div>
   )
 }

@@ -468,6 +468,11 @@ func TestListChecks(t *testing.T) {
 		t.Fatalf("checks = %d, want 1", len(checks))
 	}
 
+	rec = do(t, srv, http.MethodGet, "/api/endpoints/1/checks?window=1h", "")
+	if rec.Code != http.StatusOK {
+		t.Errorf("1h window: status = %d, want 200", rec.Code)
+	}
+
 	rec = do(t, srv, http.MethodGet, "/api/endpoints/1/checks?window=bogus", "")
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("bad window: status = %d, want 400", rec.Code)
