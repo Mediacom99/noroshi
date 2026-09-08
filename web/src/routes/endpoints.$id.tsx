@@ -145,7 +145,7 @@ function EndpointDetailPage() {
     intervalValue.trim() === ''
       ? null
       : parsedInterval === null
-        ? 'Invalid duration — use e.g. 30s, 5m, 1h30m'
+        ? 'Invalid duration — use e.g. 30s, 5m, 1h30m, 1d, 1w'
         : parsedInterval < 10
           ? 'Minimum interval is 10s'
           : null
@@ -307,7 +307,7 @@ function EndpointDetailPage() {
                 )}
               </div>
               <p className="mt-1.5 text-xs text-zinc-500">
-                Format: 10s, 30s, 5m, 1h — minimum 10s
+                Format: 30s, 5m, 1h30m, 1d, 1w — minimum 10s
               </p>
               {intervalError && <p className="mt-1 text-xs text-rose-400">{intervalError}</p>}
             </form>

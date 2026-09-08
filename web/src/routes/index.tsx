@@ -10,7 +10,7 @@ import { TypeChip } from '../components/TypeChip'
 import { UptimeBar } from '../components/UptimeBar'
 import { MaintenanceChip } from '../components/MaintenanceChip'
 import { AddEndpointForm } from '../components/AddEndpointForm'
-import { formatLatency, formatUptime, relativeTime } from '../lib/format'
+import { formatInterval, formatLatency, formatUptime, relativeTime } from '../lib/format'
 import { statusKind, statusTokens, uptimeTextColor } from '../lib/status'
 import type { StatusKind } from '../lib/status'
 import { overallUptime } from '../lib/stats'
@@ -42,7 +42,8 @@ function DashboardPage() {
   const [query, setQuery] = useState('')
   const [showAddForm, setShowAddForm] = useState(false)
   const [formPrefill, setFormPrefill] = useState<
-    { name: string; url: string; interval: string } | undefined
+    | { name: string; url: string; interval: string; expectedStatus: string; expectedKeyword: string }
+    | undefined
   >(undefined)
 
   // Clone flow: /?clone=<id> opens the add form prefilled from that endpoint,
@@ -54,7 +55,9 @@ function DashboardPage() {
       setFormPrefill({
         name: `${source.name}-copy`,
         url: source.url,
-        interval: String(source.interval_seconds),
+        interval: formatInterval(source.interval_seconds),
+        expectedStatus: source.expected_status > 0 ? String(source.expected_status) : '',
+        expectedKeyword: source.expected_keyword,
       })
     }
     setShowAddForm(true)

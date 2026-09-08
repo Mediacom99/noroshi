@@ -42,6 +42,8 @@ type addRequest struct {
 	Name            string `json:"name"`
 	URL             string `json:"url"`
 	IntervalSeconds int    `json:"interval_seconds"`
+	ExpectedStatus  int    `json:"expected_status"`  // 0 = any 2xx
+	ExpectedKeyword string `json:"expected_keyword"` // "" = no body check
 }
 
 func (s *Server) addEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +71,16 @@ func (s *Server) addEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("interval must be at least %ds", minIntervalSeconds))
 		return
 	}
+	if req.ExpectedStatus != 0 && (req.ExpectedStatus < 100 || req.ExpectedStatus > 599) {
+		writeError(w, http.StatusBadRequest, "expected status must be 0 (any 2xx) or 100-599")
+		return
+	}
+	if req.ExpectedKeyword != "" {
+		if err := bot.ValidateKeywordSpec(req.ExpectedKeyword); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
 	ep, err := s.store.AddEndpoint(r.Context(), req.Name, req.URL, interval)
 	if err != nil {
@@ -79,6 +91,21 @@ func (s *Server) addEndpoint(w http.ResponseWriter, r *http.Request) {
 	// restart — same trade-off as the bot's /add.
 	if err := s.scheduler.Add(r.Context(), ep); err != nil {
 		s.logger.Error("add endpoint to scheduler", "id", ep.ID, "error", err)
+	}
+	// Optional expectations, applied right after creation (bot: /expect, /keyword).
+	if req.ExpectedStatus != 0 {
+		if err := s.store.SetExpectedStatus(r.Context(), ep.ID, req.ExpectedStatus); err != nil {
+			s.logger.Error("set expected status", "id", ep.ID, "error", err)
+		} else {
+			ep.ExpectedStatus = req.ExpectedStatus
+		}
+	}
+	if req.ExpectedKeyword != "" {
+		if err := s.store.SetExpectedKeyword(r.Context(), ep.ID, req.ExpectedKeyword); err != nil {
+			s.logger.Error("set expected keyword", "id", ep.ID, "error", err)
+		} else {
+			ep.ExpectedKeyword = req.ExpectedKeyword
+		}
 	}
 	s.logger.Info("endpoint added", "id", ep.ID, "name", ep.Name, "url", ep.URL)
 	writeJSON(w, http.StatusCreated, map[string]any{"endpoint": toEndpointJSON(ep)})

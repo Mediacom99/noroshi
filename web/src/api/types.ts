@@ -58,6 +58,8 @@ export interface CreateEndpointInput {
   name: string
   url: string
   interval_seconds?: number
+  expected_status?: number // 0 = any 2xx
+  expected_keyword?: string // "" = no body check
 }
 
 export interface UpdateEndpointInput {

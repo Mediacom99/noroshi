@@ -299,12 +299,35 @@ func TestAddEndpoint(t *testing.T) {
 		{"invalid name", `{"name":"123","url":"https://example.org"}`, http.StatusBadRequest},
 		{"invalid url", `{"name":"web","url":"ftp://example.org"}`, http.StatusBadRequest},
 		{"interval too small", `{"name":"web","url":"https://example.org","interval_seconds":5}`, http.StatusBadRequest},
+		{"invalid expected status", `{"name":"web","url":"https://example.org","expected_status":99}`, http.StatusBadRequest},
+		{"invalid keyword", `{"name":"web","url":"https://example.org","expected_keyword":"re:["}`, http.StatusBadRequest},
 		{"bad json", `{`, http.StatusBadRequest},
 	} {
 		rec := do(t, srv, http.MethodPost, "/api/endpoints", tc.body)
 		if rec.Code != tc.wantStatus {
 			t.Errorf("%s: status = %d, want %d (body: %s)", tc.name, rec.Code, tc.wantStatus, rec.Body.String())
 		}
+	}
+}
+
+func TestAddEndpointWithExpectations(t *testing.T) {
+	srv := newTestServer(defaultMockStore(), &mockScheduler{})
+
+	rec := do(t, srv, http.MethodPost, "/api/endpoints",
+		`{"name":"web","url":"https://example.org","interval_seconds":30,"expected_status":200,"expected_keyword":"\"status\":\"ok\""}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+	body := decodeBody(t, rec)
+	ep, ok := body["endpoint"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing endpoint: %v", body)
+	}
+	if ep["expected_status"].(float64) != 200 {
+		t.Errorf("expected_status = %v, want 200", ep["expected_status"])
+	}
+	if ep["expected_keyword"].(string) != `"status":"ok"` {
+		t.Errorf("expected_keyword = %q", ep["expected_keyword"])
 	}
 }
 

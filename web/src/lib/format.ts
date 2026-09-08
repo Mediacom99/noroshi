@@ -54,34 +54,46 @@ export function shortDate(d: Date): string {
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
-// Parse a Go-style duration ("10s", "5m", "1h30m", case/whitespace-lenient)
-// into seconds. Plain numbers without a unit are rejected (returns null).
+// Parse a duration into seconds. Units: s (seconds), m (minutes), h (hours),
+// d (days), w (weeks) — composable Go-style ("1h30m", "1w2d"), case/whitespace
+// lenient. A bare number is treated as seconds. Invalid input returns null.
 export function parseDuration(input: string): number | null {
   const s = input.trim().toLowerCase().replace(/\s+/g, '')
   if (!s) return null
-  const re = /(\d+(?:\.\d+)?)([smh])/g
+  if (/^\d+$/.test(s)) {
+    const n = parseInt(s, 10)
+    return n > 0 ? n : null
+  }
+  const factors: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 }
+  const re = /(\d+(?:\.\d+)?)([smhdw])/g
   let total = 0
   let consumed = ''
   let match: RegExpExecArray | null
   while ((match = re.exec(s)) !== null) {
     consumed += match[0]
-    const value = parseFloat(match[1])
-    total += match[2] === 'h' ? value * 3600 : match[2] === 'm' ? value * 60 : value
+    total += parseFloat(match[1]) * factors[match[2]]
   }
   if (consumed !== s || total <= 0) return null
   return Math.round(total)
 }
 
 // Render an interval in seconds using the same duration convention as
-// parseDuration: 45 -> "45s", 300 -> "5m", 90 -> "1m30s", 5400 -> "1h30m".
+// parseDuration: 45 -> "45s", 300 -> "5m", 5400 -> "1h30m", 90000 -> "1d1h",
+// 1209600 -> "2w".
 export function formatInterval(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`
-  if (seconds < 3600) {
-    const m = Math.floor(seconds / 60)
-    const s = seconds % 60
-    return s > 0 ? `${m}m${s}s` : `${m}m`
+  const parts: string[] = []
+  let rest = seconds
+  for (const [unit, size] of [
+    ['w', 604800],
+    ['d', 86400],
+    ['h', 3600],
+    ['m', 60],
+  ] as const) {
+    if (rest >= size) {
+      parts.push(`${Math.floor(rest / size)}${unit}`)
+      rest %= size
+    }
   }
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  return m > 0 ? `${h}h${m}m` : `${h}h`
+  if (rest > 0 || parts.length === 0) parts.push(`${rest}s`)
+  return parts.join('')
 }
