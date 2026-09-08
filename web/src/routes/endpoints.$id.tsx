@@ -41,7 +41,7 @@ export const endpointDetailRoute = createRoute({
 const WINDOWS: readonly StatsWindow[] = ['24h', '7d', '30d']
 const CERT_WARNING_DAYS = 14
 
-type Tab = 'overview' | 'incidents' | 'config'
+type Tab = 'overview' | 'incidents' | 'graphs' | 'config'
 
 function EndpointDetailPage() {
   const { id: idParam } = endpointDetailRoute.useParams()
@@ -59,14 +59,11 @@ function EndpointDetailPage() {
   const checkNow = useCheckNow(id)
   const pauseEndpoint = usePauseEndpoint(id)
   const resumeEndpoint = useResumeEndpoint(id)
-  const updateEndpoint = useUpdateEndpoint(id)
   const deleteEndpoint = useDeleteEndpoint()
 
   const [tab, setTab] = useState<Tab>('overview')
   const [showPauseForm, setShowPauseForm] = useState(false)
   const [pauseDuration, setPauseDuration] = useState('')
-  const [showIntervalForm, setShowIntervalForm] = useState(false)
-  const [intervalValue, setIntervalValue] = useState('')
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [copied, setCopied] = useState<'url' | 'markdown' | null>(null)
 
@@ -117,6 +114,7 @@ function EndpointDetailPage() {
   const tabs: { key: Tab; label: string; badge?: number }[] = [
     { key: 'overview', label: 'Overview' },
     { key: 'incidents', label: 'Incidents', badge: incidentCount },
+    { key: 'graphs', label: 'Graphs' },
     { key: 'config', label: 'Configuration' },
   ]
 
@@ -129,26 +127,6 @@ function EndpointDetailPage() {
       },
     })
   }
-
-  function handleIntervalSubmit(e: FormEvent) {
-    e.preventDefault()
-    const seconds = parseDuration(intervalValue)
-    if (seconds === null || seconds < 10) return
-    updateEndpoint.mutate(
-      { interval_seconds: seconds },
-      { onSuccess: () => setShowIntervalForm(false) },
-    )
-  }
-
-  const parsedInterval = parseDuration(intervalValue)
-  const intervalError =
-    intervalValue.trim() === ''
-      ? null
-      : parsedInterval === null
-        ? 'Invalid duration — use e.g. 30s, 5m, 1h30m, 1d, 1w'
-        : parsedInterval < 10
-          ? 'Minimum interval is 10s'
-          : null
 
   function handleDelete() {
     deleteEndpoint.mutate(id, { onSuccess: () => void navigate({ to: '/' }) })
@@ -181,6 +159,17 @@ function EndpointDetailPage() {
                   {' '}
                   · last checked {relativeTime(endpoint.last_checked_at)} · every{' '}
                   {formatInterval(endpoint.interval_seconds)}
+                </span>
+                {endpoint.last_checked_at && !endpoint.paused && (
+                  <span className="tabular-nums text-zinc-500">
+                    {' '}
+                    · {formatLatency(endpoint.last_latency_ms)}
+                    {endpoint.last_status_code > 0 ? ` · HTTP ${endpoint.last_status_code}` : ''}
+                  </span>
+                )}
+                <span className="text-zinc-500">
+                  {' '}
+                  · created {new Date(endpoint.created_at).toLocaleDateString()}
                 </span>
                 {endpoint.paused && endpoint.paused_until && (
                   <span className="text-zinc-500">
@@ -215,21 +204,6 @@ function EndpointDetailPage() {
                   Pause
                 </button>
               )}
-              <button
-                onClick={() => {
-                  setIntervalValue(formatInterval(endpoint.interval_seconds))
-                  setShowIntervalForm((v) => !v)
-                }}
-                className="btn btn-secondary"
-              >
-                Interval
-              </button>
-              <button
-                onClick={() => void navigate({ to: '/', search: { clone: String(id) } })}
-                className="btn btn-secondary"
-              >
-                Clone
-              </button>
               <button onClick={() => setShowDeleteDialog(true)} className="btn btn-danger">
                 Delete
               </button>
@@ -270,46 +244,6 @@ function EndpointDetailPage() {
               >
                 Cancel
               </button>
-            </form>
-          )}
-
-          {showIntervalForm && (
-            <form
-              onSubmit={handleIntervalSubmit}
-              className="mt-4 rounded-lg border border-zinc-800/60 bg-zinc-950/60 p-3"
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <input
-                  type="text"
-                  value={intervalValue}
-                  onChange={(e) => setIntervalValue(e.target.value)}
-                  placeholder="e.g. 30s, 5m, 1h30m"
-                  className="input w-48"
-                />
-                <button
-                  type="submit"
-                  disabled={
-                    updateEndpoint.isPending || parsedInterval === null || parsedInterval < 10
-                  }
-                  className="btn btn-primary"
-                >
-                  {updateEndpoint.isPending ? 'Saving…' : 'Save'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowIntervalForm(false)}
-                  className="btn btn-secondary"
-                >
-                  Cancel
-                </button>
-                {updateEndpoint.isError && (
-                  <span className="text-xs text-rose-400">{updateEndpoint.error.message}</span>
-                )}
-              </div>
-              <p className="mt-1.5 text-xs text-zinc-500">
-                Format: 30s, 5m, 1h30m, 1d, 1w — minimum 10s
-              </p>
-              {intervalError && <p className="mt-1 text-xs text-rose-400">{intervalError}</p>}
             </form>
           )}
 
@@ -381,10 +315,11 @@ function EndpointDetailPage() {
 
         {tab === 'overview' && (
           <>
-            <section className="mt-6 grid gap-3 sm:grid-cols-3">
-              {WINDOWS.map((w) => (
-                <StatCard key={w} label={w} stats={stats[w]} />
-              ))}
+            <section className="mt-6">
+              <h2 className="section-label">Analytics</h2>
+              <div className="mt-3">
+                <KpiStrip checks={checksQuery.data ?? []} incidents={incidentsQuery.data ?? []} />
+              </div>
             </section>
 
             <section className="mt-8">
@@ -400,36 +335,10 @@ function EndpointDetailPage() {
               </div>
             </section>
 
-            <section className="mt-8">
-              <h2 className="section-label">Analytics</h2>
-              <div className="mt-3">
-                <KpiStrip checks={checksQuery.data ?? []} incidents={incidentsQuery.data ?? []} />
-              </div>
-            </section>
-
-            <section className="mt-8">
-              <div className="flex items-center justify-between">
-                <h2 className="section-label">Latency</h2>
-                <SegmentedControl
-                  options={WINDOWS}
-                  value={window_}
-                  onChange={setWindow}
-                  ariaLabel="Latency window"
-                />
-              </div>
-              <div className="mt-3">
-                {checksQuery.isLoading ? (
-                  <div className="card flex h-44 items-center justify-center">
-                    <div className="h-4 w-32 animate-pulse rounded bg-zinc-800" />
-                  </div>
-                ) : checksQuery.isError ? (
-                  <div className="card flex h-44 items-center justify-center text-sm text-rose-400">
-                    {checksQuery.error.message}
-                  </div>
-                ) : (
-                  <LatencyChart checks={checksQuery.data ?? []} window={window_} />
-                )}
-              </div>
+            <section className="mt-8 grid gap-3 sm:grid-cols-3">
+              {WINDOWS.map((w) => (
+                <StatCard key={w} label={w} stats={stats[w]} />
+              ))}
             </section>
           </>
         )}
@@ -446,39 +355,40 @@ function EndpointDetailPage() {
           </section>
         )}
 
+        {tab === 'graphs' && (
+          <section className="mt-6">
+            <div className="flex items-center justify-between">
+              <h2 className="section-label">Latency</h2>
+              <SegmentedControl
+                options={WINDOWS}
+                value={window_}
+                onChange={setWindow}
+                ariaLabel="Latency window"
+              />
+            </div>
+            <div className="mt-3">
+              {checksQuery.isLoading ? (
+                <div className="card flex h-44 items-center justify-center">
+                  <div className="h-4 w-32 animate-pulse rounded bg-zinc-800" />
+                </div>
+              ) : checksQuery.isError ? (
+                <div className="card flex h-44 items-center justify-center text-sm text-rose-400">
+                  {checksQuery.error.message}
+                </div>
+              ) : (
+                <LatencyChart checks={checksQuery.data ?? []} window={window_} />
+              )}
+            </div>
+          </section>
+        )}
+
         {tab === 'config' && (
           <section className="mt-6">
             <div className="card space-y-3 p-4 text-sm">
               <RenameRow endpoint={endpoint} />
-              <p>
-                <span className="text-zinc-500">Interval </span>
-                <span className="tabular-nums text-zinc-200">
-                  {formatInterval(endpoint.interval_seconds)}
-                </span>
-              </p>
+              <IntervalRow endpoint={endpoint} />
               <ExpectedStatusRow endpoint={endpoint} />
               <ExpectedKeywordRow endpoint={endpoint} />
-              <p>
-                <span className="text-zinc-500">Created </span>
-                <span className="text-zinc-200">
-                  {new Date(endpoint.created_at).toLocaleDateString()}
-                </span>
-              </p>
-              <p>
-                <span className="text-zinc-500">Last checked </span>
-                <span className="text-zinc-200">{relativeTime(endpoint.last_checked_at)}</span>
-              </p>
-              {endpoint.last_checked_at && !endpoint.paused && (
-                <p>
-                  <span className="text-zinc-500">Last latency </span>
-                  <span className="tabular-nums text-zinc-200">
-                    {formatLatency(endpoint.last_latency_ms)}
-                  </span>
-                  {endpoint.last_status_code > 0 && (
-                    <span className="ml-3 text-zinc-500">HTTP {endpoint.last_status_code}</span>
-                  )}
-                </p>
-              )}
               {endpoint.last_check_error && endpoint.status === 'not_ok' && (
                 <p>
                   <span className="text-zinc-500">Last error </span>
@@ -615,6 +525,30 @@ function RenameRow({ endpoint }: { endpoint: Endpoint }) {
       initialValue={endpoint.name}
       validate={(v) => (v.trim() === '' ? 'Name is required' : null)}
       buildPatch={(v) => ({ name: v.trim() })}
+    />
+  )
+}
+
+function IntervalRow({ endpoint }: { endpoint: Endpoint }) {
+  return (
+    <EditableRow
+      endpoint={endpoint}
+      label="Interval"
+      display={
+        <span className="tabular-nums">{formatInterval(endpoint.interval_seconds)}</span>
+      }
+      initialValue={formatInterval(endpoint.interval_seconds)}
+      placeholder="e.g. 30s, 5m, 1h30m, 1d, 1w"
+      hint="Smart durations: s, m, h, d (days), w (weeks) — a bare number means seconds. Minimum 10s."
+      mono
+      validate={(v) => {
+        if (v.trim() === '') return 'Interval is required'
+        const seconds = parseDuration(v)
+        if (seconds === null) return 'Invalid duration — use e.g. 30s, 5m, 1h30m, 1d, 1w'
+        if (seconds < 10) return 'Minimum interval is 10s'
+        return null
+      }}
+      buildPatch={(v) => ({ interval_seconds: parseDuration(v) ?? 0 })}
     />
   )
 }

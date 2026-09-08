@@ -5,21 +5,14 @@ import { formatInterval, parseDuration } from '../lib/format'
 
 interface AddEndpointFormProps {
   onDone: () => void
-  initial?: {
-    name: string
-    url: string
-    interval: string
-    expectedStatus?: string
-    expectedKeyword?: string
-  }
 }
 
-export function AddEndpointForm({ onDone, initial }: AddEndpointFormProps) {
-  const [name, setName] = useState(initial?.name ?? '')
-  const [url, setUrl] = useState(initial?.url ?? '')
-  const [interval, setInterval_] = useState(initial?.interval ?? '1m')
-  const [expectedStatus, setExpectedStatus] = useState(initial?.expectedStatus ?? '')
-  const [expectedKeyword, setExpectedKeyword] = useState(initial?.expectedKeyword ?? '')
+export function AddEndpointForm({ onDone }: AddEndpointFormProps) {
+  const [name, setName] = useState('')
+  const [url, setUrl] = useState('')
+  const [interval, setInterval_] = useState('1m')
+  const [expectedStatus, setExpectedStatus] = useState('')
+  const [expectedKeyword, setExpectedKeyword] = useState('')
   const createEndpoint = useCreateEndpoint()
 
   const intervalSeconds = parseDuration(interval)

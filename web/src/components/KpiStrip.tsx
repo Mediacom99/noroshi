@@ -7,10 +7,13 @@ interface KpiStripProps {
   incidents: Incident[]
 }
 
-function KpiTile({ label, value }: { label: string; value: string }) {
+function KpiTile({ label, value, accent }: { label: string; value: string; accent: string }) {
   return (
     <div className="card p-3">
-      <p className="section-label">{label}</p>
+      <p className="section-label flex items-center gap-1.5">
+        <span className={`h-1.5 w-1.5 rounded-full ${accent}`} />
+        {label}
+      </p>
       <p className="mt-1.5 text-lg font-semibold tabular-nums text-zinc-100">{value}</p>
     </div>
   )
@@ -44,14 +47,19 @@ export function KpiStrip({ checks, incidents }: KpiStripProps) {
   return (
     <div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <KpiTile label="Min" value={lat(min)} />
-        <KpiTile label="Avg" value={lat(avg)} />
-        <KpiTile label="Max" value={lat(max)} />
-        <KpiTile label="P95" value={lat(p95)} />
-        <KpiTile label="MTTR" value={mttrSeconds === null ? '—' : formatDuration(mttrSeconds)} />
+        <KpiTile label="Min" value={lat(min)} accent="bg-emerald-500" />
+        <KpiTile label="Avg" value={lat(avg)} accent="bg-sky-500" />
+        <KpiTile label="Max" value={lat(max)} accent="bg-amber-500" />
+        <KpiTile label="P95" value={lat(p95)} accent="bg-violet-500" />
+        <KpiTile
+          label="MTTR"
+          value={mttrSeconds === null ? '—' : formatDuration(mttrSeconds)}
+          accent="bg-cyan-500"
+        />
         <KpiTile
           label="Downtime"
           value={incidents.length === 0 ? '—' : formatDuration(downtimeSeconds)}
+          accent={incidents.length === 0 ? 'bg-zinc-600' : 'bg-rose-500'}
         />
       </div>
       <p className="mt-2 text-[11px] text-zinc-600">

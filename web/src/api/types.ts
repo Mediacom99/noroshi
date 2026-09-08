@@ -154,22 +154,6 @@ export function useChecks(id: number, window: StatsWindow) {
   })
 }
 
-// 24h checks for every endpoint at once (dashboard uptime bars).
-// Result order matches the input array; shares the cache with useChecks(id, '24h').
-export function useChecks24h(endpoints: Endpoint[] | undefined) {
-  return useQueries({
-    queries: (endpoints ?? []).map((endpoint) => ({
-      queryKey: ['endpoints', endpoint.id, 'checks', '24h' as const],
-      queryFn: () =>
-        api<{ checks: Check[] }>(`/api/endpoints/${endpoint.id}/checks?window=24h`).then(
-          (r) => r.checks,
-        ),
-      refetchInterval: 60000,
-      staleTime: 30000,
-    })),
-  })
-}
-
 const DAILY_DAYS = 30
 
 export function useDailyStats(id: number) {

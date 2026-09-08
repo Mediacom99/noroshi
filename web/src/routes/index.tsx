@@ -2,15 +2,15 @@ import { useEffect, useState } from 'react'
 import { createRoute, Link, useNavigate } from '@tanstack/react-router'
 import { rootRoute } from './root'
 import { clearToken } from '../api/client'
-import { useChecks24h, useDailyStatsAll, useEndpoints, useMaintenanceWindows } from '../api/types'
-import type { Check, Endpoint } from '../api/types'
+import { useDailyStatsAll, useEndpoints, useMaintenanceWindows } from '../api/types'
+import type { Endpoint } from '../api/types'
 import { Header } from '../components/Header'
 import { StatusDot } from '../components/StatusDot'
 import { TypeChip } from '../components/TypeChip'
-import { UptimeBar } from '../components/UptimeBar'
+import { DailyUptimeBar } from '../components/DailyUptimeBar'
 import { MaintenanceChip } from '../components/MaintenanceChip'
 import { AddEndpointForm } from '../components/AddEndpointForm'
-import { formatInterval, formatLatency, formatUptime, relativeTime } from '../lib/format'
+import { formatLatency, formatUptime, relativeTime } from '../lib/format'
 import { statusKind, statusTokens, uptimeTextColor } from '../lib/status'
 import type { StatusKind } from '../lib/status'
 import { overallUptime } from '../lib/stats'
@@ -20,49 +20,25 @@ import type { DayStat } from '../api/types'
 export const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  validateSearch: (search: Record<string, unknown>): { clone?: string } => ({
-    clone: typeof search.clone === 'string' ? search.clone : undefined,
-  }),
   component: DashboardPage,
 })
 
 type Filter = 'all' | 'up' | 'down' | 'paused'
+
+const PAGE_SIZE = 10
 
 // Sort order: attention first — down, unknown, up, paused; alphabetical within.
 const SORT_ORDER: Record<StatusKind, number> = { down: 0, unknown: 1, up: 2, paused: 3 }
 
 function DashboardPage() {
   const navigate = useNavigate()
-  const { clone } = indexRoute.useSearch()
   const { data: endpoints, isLoading, isError, error, dataUpdatedAt } = useEndpoints()
-  const checksResults = useChecks24h(endpoints)
   const dailyResults = useDailyStatsAll(endpoints)
   const maintenanceQuery = useMaintenanceWindows()
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
+  const [page, setPage] = useState(1)
   const [showAddForm, setShowAddForm] = useState(false)
-  const [formPrefill, setFormPrefill] = useState<
-    | { name: string; url: string; interval: string; expectedStatus: string; expectedKeyword: string }
-    | undefined
-  >(undefined)
-
-  // Clone flow: /?clone=<id> opens the add form prefilled from that endpoint,
-  // then strips the param so a refresh doesn't reopen it.
-  useEffect(() => {
-    if (!clone || !endpoints) return
-    const source = endpoints.find((e) => e.id === Number(clone))
-    if (source) {
-      setFormPrefill({
-        name: `${source.name}-copy`,
-        url: source.url,
-        interval: formatInterval(source.interval_seconds),
-        expectedStatus: source.expected_status > 0 ? String(source.expected_status) : '',
-        expectedKeyword: source.expected_keyword,
-      })
-    }
-    setShowAddForm(true)
-    void navigate({ to: '/', search: {}, replace: true })
-  }, [clone, endpoints, navigate])
 
   function logout() {
     clearToken()
@@ -78,7 +54,6 @@ function DashboardPage() {
   const rows = (endpoints ?? [])
     .map((endpoint, i) => ({
       endpoint,
-      checks: checksResults[i]?.data,
       days: dailyResults[i]?.data,
     }))
     .sort((a, b) => {
@@ -96,6 +71,12 @@ function DashboardPage() {
       endpoint.name.toLowerCase().includes(needle) || endpoint.url.toLowerCase().includes(needle)
     )
   })
+
+  // Client-side pagination; back to page 1 whenever the visible set changes.
+  useEffect(() => setPage(1), [filter, query])
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE))
+  const currentPage = Math.min(page, pageCount)
+  const pageRows = filteredRows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
 
   const filters: { key: Filter; label: string; count: number }[] = [
     { key: 'all', label: 'All', count: total },
@@ -128,31 +109,47 @@ function DashboardPage() {
           <>
             <StatusBanner counts={counts} total={total} />
 
-            {total > 0 && (
-              <div className="mt-6 flex flex-wrap items-center gap-2">
-                <input
-                  type="search"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Filter by name or URL…"
-                  aria-label="Filter endpoints"
-                  className="input w-full sm:w-64"
-                />
-                {filters.map((f) => (
-                  <button
-                    key={f.key}
-                    onClick={() => setFilter(f.key)}
-                    aria-pressed={filter === f.key}
-                    className={`chip ${
-                      filter === f.key
-                        ? 'border-zinc-600 bg-zinc-800 text-zinc-100'
-                        : 'border-zinc-800/60 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
-                    }`}
-                  >
-                    {f.label}
-                    <span className="tabular-nums text-zinc-500">{f.count}</span>
-                  </button>
-                ))}
+            <div className="mt-6 flex flex-wrap items-center gap-2">
+              {total > 0 && (
+                <>
+                  <input
+                    type="search"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Filter by name or URL…"
+                    aria-label="Filter endpoints"
+                    className="input w-full sm:w-64"
+                  />
+                  {filters.map((f) => (
+                    <button
+                      key={f.key}
+                      onClick={() => setFilter(f.key)}
+                      aria-pressed={filter === f.key}
+                      className={`chip ${
+                        filter === f.key
+                          ? 'border-zinc-600 bg-zinc-800 text-zinc-100'
+                          : 'border-zinc-800/60 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
+                      }`}
+                    >
+                      {f.label}
+                      <span className="tabular-nums text-zinc-500">{f.count}</span>
+                    </button>
+                  ))}
+                </>
+              )}
+              {!showAddForm && (
+                <button
+                  onClick={() => setShowAddForm(true)}
+                  className="btn btn-secondary ml-auto"
+                >
+                  Add endpoint
+                </button>
+              )}
+            </div>
+
+            {showAddForm && (
+              <div className="mt-4">
+                <AddEndpointForm onDone={() => setShowAddForm(false)} />
               </div>
             )}
 
@@ -170,35 +167,42 @@ function DashboardPage() {
                   No endpoints match your filters.
                 </div>
               )}
-              {filteredRows.map(({ endpoint, checks, days }) => (
+              {pageRows.map(({ endpoint, days }) => (
                 <EndpointRow
                   key={endpoint.id}
                   endpoint={endpoint}
-                  checks={checks}
                   days={days}
                   inMaintenance={isEndpointInMaintenance(maintenanceQuery.data, endpoint.id)}
                 />
               ))}
             </div>
+
+            {pageCount > 1 && (
+              <div className="mt-4 flex items-center justify-between text-xs text-zinc-500">
+                <span className="tabular-nums">
+                  Page {currentPage} of {pageCount} · {filteredRows.length} endpoint
+                  {filteredRows.length === 1 ? '' : 's'}
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="btn btn-secondary disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                    disabled={currentPage === pageCount}
+                    className="btn btn-secondary disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         )}
-
-        <div className="mt-6">
-          {showAddForm ? (
-            <AddEndpointForm
-              key={formPrefill ? `${formPrefill.name}-${formPrefill.url}` : 'blank'}
-              initial={formPrefill}
-              onDone={() => {
-                setShowAddForm(false)
-                setFormPrefill(undefined)
-              }}
-            />
-          ) : (
-            <button onClick={() => setShowAddForm(true)} className="btn btn-secondary">
-              Add endpoint
-            </button>
-          )}
-        </div>
       </main>
     </div>
   )
@@ -274,12 +278,10 @@ function StatusBanner({ counts, total }: { counts: Record<StatusKind, number>; t
 
 function EndpointRow({
   endpoint,
-  checks,
   days,
   inMaintenance,
 }: {
   endpoint: Endpoint
-  checks: Check[] | undefined
   days: DayStat[] | undefined
   inMaintenance: boolean
 }) {
@@ -321,7 +323,7 @@ function EndpointRow({
         </div>
       </div>
       <div className="mt-3">
-        <UptimeBar checks={checks} paused={endpoint.paused} />
+        <DailyUptimeBar days={days} paused={endpoint.paused} />
       </div>
     </Link>
   )
