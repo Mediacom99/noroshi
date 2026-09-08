@@ -9,7 +9,7 @@ import { StatusDot } from '../components/StatusDot'
 import { TypeChip } from '../components/TypeChip'
 import { DailyUptimeBar } from '../components/DailyUptimeBar'
 import { MaintenanceChip } from '../components/MaintenanceChip'
-import { AddEndpointForm } from '../components/AddEndpointForm'
+import { AddEndpointDialog } from '../components/AddEndpointDialog'
 import { formatLatency, formatUptime, relativeTime } from '../lib/format'
 import { statusKind, statusTokens, uptimeTextColor } from '../lib/status'
 import type { StatusKind } from '../lib/status'
@@ -137,21 +137,15 @@ function DashboardPage() {
                   ))}
                 </>
               )}
-              {!showAddForm && (
-                <button
-                  onClick={() => setShowAddForm(true)}
-                  className="btn btn-secondary ml-auto"
-                >
-                  Add endpoint
-                </button>
-              )}
+              <button
+                onClick={() => setShowAddForm(true)}
+                className="btn btn-secondary ml-auto"
+              >
+                Add endpoint
+              </button>
             </div>
 
-            {showAddForm && (
-              <div className="mt-4">
-                <AddEndpointForm onDone={() => setShowAddForm(false)} />
-              </div>
-            )}
+            {showAddForm && <AddEndpointDialog onDone={() => setShowAddForm(false)} />}
 
             <div className="mt-4 space-y-3">
               {total === 0 && (
