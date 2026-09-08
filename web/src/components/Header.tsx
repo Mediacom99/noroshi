@@ -10,7 +10,7 @@ export function Header({ right }: { right?: ReactNode }) {
             to="/"
             className="flex items-center gap-2 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400/40"
           >
-            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+            <img src="/favicon.svg" alt="" className="h-5 w-5 rounded-md" />
             <span className="text-sm font-semibold tracking-tight text-zinc-100">noroshi</span>
           </Link>
           <nav className="flex items-center gap-1 text-sm" aria-label="Main navigation">
