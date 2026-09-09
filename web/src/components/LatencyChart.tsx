@@ -23,6 +23,8 @@ const BOTTOM_PCT = 88
 // Hand-rolled SVG area chart. Gridlines, dots and the crosshair are HTML
 // overlays positioned in percent so they stay crisp while the SVG
 // (viewBox 0..100, non-scaling stroke) stretches to fill the container.
+// X positions are time-based: a check plots where it actually happened in
+// the window, so freshly added endpoints don't fake a full-window history.
 export function LatencyChart({ checks, window }: LatencyChartProps) {
   const sorted = useMemo(
     () => [...checks].sort((a, b) => a.checked_at.localeCompare(b.checked_at)),
@@ -49,35 +51,52 @@ export function LatencyChart({ checks, window }: LatencyChartProps) {
   const p95Latency = percentile(upLatencies, 95)
   const referenceLines: { ms: number; label: string }[] = []
   if (avgLatency !== null) referenceLines.push({ ms: avgLatency, label: 'avg' })
-  // Skip p95 when it would sit within ~6% of the scale of avg — the labels
-  // would overlap and be illegible.
+  // Skip p95 when it would sit within ~6% of the scale of avg — the two
+  // dashed lines would be indistinguishable anyway.
   if (
     p95Latency !== null &&
     (avgLatency === null || Math.abs(p95Latency - avgLatency) / maxLatency > 0.06)
   ) {
     referenceLines.push({ ms: p95Latency, label: 'p95' })
   }
-  const xPct = (i: number) => (n === 1 ? 50 : (i / (n - 1)) * 100)
+
+  const axisEnd = Date.now()
+  const axisStart = axisEnd - WINDOW_MS[window]
+  // Time-based x positions (ascending, since `sorted` is chronological).
+  const xs = sorted.map((c) => {
+    const t = new Date(c.checked_at).getTime()
+    if (Number.isNaN(t)) return 0
+    return Math.max(0, Math.min(100, ((t - axisStart) / WINDOW_MS[window]) * 100))
+  })
   const yPct = (ms: number) => TOP_PCT + (1 - ms / maxLatency) * (BOTTOM_PCT - TOP_PCT)
 
-  const points = sorted.map((c, i) => [xPct(i), yPct(c.latency_ms)] as const)
+  const points = sorted.map((c, i) => [xs[i], yPct(c.latency_ms)] as const)
   const linePath = points
     .map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0].toFixed(2)},${p[1].toFixed(2)}`)
     .join(' ')
-  const areaPath = `${linePath} L100,100 L0,100 Z`
+  const areaBottom = Math.min(100, Math.max(...points.map((p) => p[0])))
+  const areaLeft = Math.max(0, Math.min(...points.map((p) => p[0])))
+  const areaPath = `${linePath} L${areaBottom.toFixed(2)},100 L${areaLeft.toFixed(2)},100 Z`
 
   function handleMove(e: MouseEvent<HTMLDivElement>) {
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect || rect.width === 0) return
-    const ratio = (e.clientX - rect.left) / rect.width
-    const idx = Math.round(ratio * (n - 1))
-    setHover(Math.max(0, Math.min(n - 1, idx)))
+    const ratio = ((e.clientX - rect.left) / rect.width) * 100
+    // Nearest point by x (xs is sorted ascending); linear scan with early exit.
+    let best = 0
+    for (let i = 0; i < n; i++) {
+      if (Math.abs(xs[i] - ratio) <= Math.abs(xs[best] - ratio)) {
+        best = i
+      } else if (xs[i] > ratio) {
+        break
+      }
+    }
+    setHover(best)
   }
 
-  const axisEnd = Date.now()
-  const axisStart = axisEnd - WINDOW_MS[window]
   const axisLabels = [0, 1, 2, 3, 4].map((i) => new Date(axisStart + (WINDOW_MS[window] * i) / 4))
-  const formatAxis = (d: Date) => (window === '1h' || window === '24h' ? shortTime(d) : shortDate(d))
+  const formatAxis = (d: Date) =>
+    window === '1h' || window === '24h' ? shortTime(d) : shortDate(d)
 
   const hoverCheck = hover !== null ? sorted[hover] : null
 
@@ -97,9 +116,13 @@ export function LatencyChart({ checks, window }: LatencyChartProps) {
             className="absolute inset-x-0 border-t border-zinc-800/60"
             style={{ top: `${yPct(maxLatency * f)}%` }}
           >
-            {/* Grid values on the left so they never collide with the
-                avg/p95 reference labels on the right. */}
-            <span className="absolute -top-1.5 left-2 -translate-y-full text-[10px] tabular-nums text-zinc-600">
+            {/* Grid values on the left; the topmost sits below its line to
+                avoid being clipped by the container's overflow-hidden. */}
+            <span
+              className={`absolute left-2 text-[10px] tabular-nums text-zinc-600 ${
+                f === 1 ? 'top-0.5' : '-top-1.5 -translate-y-full'
+              }`}
+            >
               {formatLatency(maxLatency * f)}
             </span>
           </div>
@@ -110,15 +133,7 @@ export function LatencyChart({ checks, window }: LatencyChartProps) {
             key={line.label}
             className="absolute inset-x-0 border-t border-dashed border-zinc-600/70"
             style={{ top: `${yPct(line.ms)}%` }}
-          >
-            <span
-              className={`absolute right-3 text-[10px] text-zinc-500 ${
-                yPct(line.ms) > 75 ? 'bottom-0.5' : 'top-0.5'
-              }`}
-            >
-              {line.label}
-            </span>
-          </div>
+          />
         ))}
 
         <svg
@@ -151,7 +166,7 @@ export function LatencyChart({ checks, window }: LatencyChartProps) {
             className={`absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ${
               sorted[0].up ? 'bg-emerald-400' : 'bg-rose-500'
             }`}
-            style={{ left: '50%', top: `${yPct(sorted[0].latency_ms)}%` }}
+            style={{ left: `${xs[0]}%`, top: `${yPct(sorted[0].latency_ms)}%` }}
           />
         )}
 
@@ -161,7 +176,7 @@ export function LatencyChart({ checks, window }: LatencyChartProps) {
               <div
                 key={`fail-${check.checked_at}-${i}`}
                 className="absolute h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-rose-500"
-                style={{ left: `${xPct(i)}%`, top: `${yPct(check.latency_ms)}%` }}
+                style={{ left: `${xs[i]}%`, top: `${yPct(check.latency_ms)}%` }}
               />
             ),
         )}
@@ -170,19 +185,19 @@ export function LatencyChart({ checks, window }: LatencyChartProps) {
           <>
             <div
               className="absolute inset-y-0 w-px bg-zinc-600"
-              style={{ left: `${xPct(hover)}%` }}
+              style={{ left: `${xs[hover]}%` }}
             />
             <div
               className={`absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-zinc-950 ${
                 hoverCheck.up ? 'bg-emerald-400' : 'bg-rose-500'
               }`}
-              style={{ left: `${xPct(hover)}%`, top: `${yPct(hoverCheck.latency_ms)}%` }}
+              style={{ left: `${xs[hover]}%`, top: `${yPct(hoverCheck.latency_ms)}%` }}
             />
             <div
               className="pointer-events-none absolute top-2 z-10 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-xs shadow-lg"
               style={{
-                left: `${xPct(hover)}%`,
-                transform: xPct(hover) > 60 ? 'translateX(calc(-100% - 10px))' : 'translateX(10px)',
+                left: `${xs[hover]}%`,
+                transform: xs[hover] > 60 ? 'translateX(calc(-100% - 10px))' : 'translateX(10px)',
               }}
             >
               <p className="whitespace-nowrap text-zinc-500">
@@ -202,6 +217,19 @@ export function LatencyChart({ checks, window }: LatencyChartProps) {
           </>
         )}
       </div>
+
+      {referenceLines.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-4 text-[10px] text-zinc-500">
+          {referenceLines.map((line) => (
+            <span key={line.label} className="flex items-center gap-1.5">
+              <span className="inline-block w-4 border-t border-dashed border-zinc-600/70" />
+              {line.label}
+              <span className="tabular-nums text-zinc-400">{formatLatency(line.ms)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="mt-2 flex justify-between text-[11px] tabular-nums text-zinc-600">
         {axisLabels.map((d, i) => (
           <span key={i}>{formatAxis(d)}</span>
